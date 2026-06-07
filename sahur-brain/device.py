@@ -94,7 +94,7 @@ class DeviceClient:
             pass
         self._client = httpx.Client(timeout=self._timeout)
 
-    def _request(self, method: str, url: str, *, retries: int = 3, **kw):
+    def _request(self, method: str, url: str, *, retries: int = 5, **kw):
         """HTTP with self-healing: on a transport reset (Errno 54 / dropped USB
         connection) recreate the client and retry, so one iproxy hiccup doesn't
         abort an action mid-sequence."""
@@ -105,7 +105,7 @@ class DeviceClient:
             except (httpx.TransportError, httpx.RemoteProtocolError) as e:
                 last = e
                 self._reset_client()
-                time.sleep(0.3 * (attempt + 1))
+                time.sleep(0.5 * (attempt + 1))   # 0.5 / 1.0 / 1.5 / 2.0 / 2.5s
         raise last
 
     def health(self) -> dict:

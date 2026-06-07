@@ -60,13 +60,14 @@ def collect_links(a, m, app, query, min_likes=100000, count=5, max_videos=60, lo
     name = app_obj.name if app_obj else app
     log(f"▶ {name}: collect {count} '{query}' links ≥ {min_likes:,} likes")
 
-    # COLD START: kill the app first so we never inherit a warm/restored state (a
-    # leftover player or an old search). That stale state is what made us scrape the
-    # SAME videos every run without ever actually searching. (See memory: never trust
-    # a warm/restored screen — it shows a false green.)
-    if app_obj and getattr(app_obj, "bundle_id", None):
+    # COLD START: kill + relaunch ONLY when the app is not already the frontmost app.
+    # If we're already on TikTok, tapping Search is enough — killing adds ~2s for no reason.
+    # When we DO kill, we still must (stale player/search would give false-green results).
+    bundle = getattr(app_obj, "bundle_id", None) if app_obj else None
+    already_front = bundle and a._frontmost_bundle() == bundle
+    if not already_front and bundle:
         try:
-            m.kill_app(app_obj.bundle_id); time.sleep(1.0)
+            m.kill_app(bundle); time.sleep(0.8)
         except Exception:
             pass
     a.open_app(name, "open"); a._wait_loaded()
@@ -133,6 +134,7 @@ def collect_links(a, m, app, query, min_likes=100000, count=5, max_videos=60, lo
                 before = clipboard_url(m)
                 for s in copy_steps:                 # composed indexed sub-capability
                     a.tap_semantic(s); time.sleep(0.8)
+                time.sleep(0.6)   # let share sheet fully close + clipboard settle before reading
                 url = clipboard_url(m)
                 if url and url != before:
                     links.append({"rank": len(links) + 1, "likes": likes, "url": url})
