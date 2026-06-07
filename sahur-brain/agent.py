@@ -32,6 +32,7 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
 
 import httpx
 from dotenv import load_dotenv
@@ -158,6 +159,72 @@ def read_active_persona(mcp) -> str:
         return "sahur"
 
 
+# ── Mac handoff ─────────────────────────────────────────────────────────────
+# The voice agent runs ON the Mac (talking to the iPhone over USB). When the user
+# EXPLICITLY says to do something on their Mac, we transfer the instruction to the
+# Mac agent (sahur.py) — which has its own active persona (set by the floating orb)
+# and drives the desktop via AppleScript/Accessibility.
+
+_MAC_PERSONA_FILE = os.path.expanduser("~/Library/Caches/sahur_persona.txt")
+
+# ONLY route to the Mac when the user clearly names it — never for an ordinary phone task.
+_MAC_RE = re.compile(
+    r"\bon\s+(?:the\s+)?mac\b"
+    r"|\b(?:on|onto|to|over to|over on|from|using|via|open|run|check|do)\b[^.]*?"
+    r"\b(?:my|the|your)\s+(?:mac|macbook|computer|laptop|desktop)\b"
+    r"|\bmy\s+(?:mac|macbook|computer|laptop|desktop)\b",
+    re.I)
+
+
+def _is_mac_task(text: str) -> bool:
+    return bool(_MAC_RE.search(text or ""))
+
+
+def read_mac_persona() -> str:
+    """Which persona the Mac orb (sahur.py) currently has active. Default 'sahur'."""
+    try:
+        with open(_MAC_PERSONA_FILE) as f:
+            parts = f.read().strip().lower().split()
+        return (parts[0] if parts else "") or "sahur"
+    except Exception:
+        return "sahur"
+
+
+def _mac_command(text: str) -> str:
+    """Strip the 'hey go on my mac and …' routing wrapper down to the real instruction."""
+    t = _MAC_RE.sub(" ", text or "")
+    t = re.sub(r"\b(hey|yo|ok|okay|please|can you|could you|would you|go|jump|head|"
+               r"switch|transfer|over|and then|and|then|just|also|now)\b", " ", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" ,.;:")
+    return t or (text or "").strip()
+
+
+def run_on_mac(command: str) -> tuple[str, str]:
+    """Hand ONE instruction to the Mac agent (sahur.py) in its OWN venv and return
+    (mac_persona, result_text). The Mac speaks the result in its cloned voice; we
+    capture the text for the console + handback."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    mac_py = os.path.join(here, ".venv", "bin", "python")          # the Mac orb's venv
+    if not os.path.exists(mac_py):
+        mac_py = os.path.join(here, ".venv-lk", "bin", "python")   # last resort (may lack mac deps)
+    script = os.path.join(here, "sahur.py")
+    if not os.path.exists(script):
+        raise FileNotFoundError("sahur.py (the Mac agent) not found next to agent.py")
+    proc = subprocess.run([mac_py, script, "task", command],
+                          capture_output=True, text=True, timeout=240, cwd=here)
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+    def _marker(tag: str) -> str:
+        m = re.search(rf"^{tag}::(.*)$", out, re.M)
+        return m.group(1).strip() if m else ""
+
+    persona = _marker("MAC_PERSONA") or read_mac_persona()
+    result = _marker("MAC_RESULT") or (
+        "done on your Mac" if proc.returncode == 0
+        else f"the Mac agent errored ({(proc.stderr or '').strip()[-120:] or 'no output'})")
+    return persona, result
+
+
 def build_stt() -> inference.STT:
     """LiveKit Inference STT — billed on your LiveKit Cloud creds, NO provider API key needed."""
     return inference.STT(model=STT_MODEL)
@@ -240,6 +307,29 @@ class SahurAgent(Agent):
         text = (getattr(new_message, "text_content", None) or "").strip()
         if not _is_task(text):
             return  # chit-chat → let the default LLM reply in character (no tools, can't misfire)
+
+        # 2.5) EXPLICIT MAC HANDOFF — only when the user names their Mac. Read which persona
+        #      is connected to the Mac, announce the transfer in the PHONE voice, then let the
+        #      Mac agent execute + speak the result in ITS cloned voice.
+        if _is_mac_task(text):
+            mac_persona = await asyncio.to_thread(read_mac_persona)
+            cmd = _mac_command(text)
+            print(f"💻 MAC handoff → persona={mac_persona!r}  cmd={cmd!r}")
+            try:
+                quip = await asyncio.to_thread(flavor.flavor_line, self.brain, self.brain_model,
+                                               self.persona_name, f"handing this to {mac_persona} on the mac")
+            except Exception:
+                quip = ""
+            await self.session.say(quip or f"transferring to {mac_persona} on your Mac…",
+                                   allow_interruptions=False)
+            try:
+                who, result = await asyncio.to_thread(run_on_mac, cmd)
+                print(f"✅ mac done — {who}: {result}")
+            except Exception as e:
+                print(f"❌ mac handoff failed: {e}")
+                await self.session.say(f"couldn't reach your Mac — {str(e)[:60]}",
+                                       allow_interruptions=True)
+            raise StopResponse()
 
         print(f"📱 task: {text}")
         # immediate in-character "on it" so there's feedback while the work runs

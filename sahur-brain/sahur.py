@@ -804,6 +804,41 @@ def worker_loop(orb, shared):
             shared["busy"] = False
 
 
+def _persona_by_name(name: str) -> dict:
+    name = (name or "").strip().lower()
+    return next((p for p in PERSONAS if p["name"] == name), PERSONAS[0])
+
+
+def read_active_persona_name() -> str:
+    """Which persona is currently selected on the Mac orb (right-click cycles it)."""
+    try:
+        parts = open(PERSONA_FILE).read().strip().lower().split()
+        return parts[0] if parts else PERSONAS[0]["name"]
+    except OSError:
+        return PERSONAS[0]["name"]
+
+
+def run_headless_task(command: str, speak_result: bool = True) -> dict:
+    """Run ONE Mac task WITHOUT the orb GUI/mic — used when the phone voice agent
+    transfers a 'do X on my Mac' request over here. Prints machine-readable markers
+    (MAC_PERSONA / MAC_RESULT) so the caller can parse persona + result, and speaks
+    the reply in the active Mac persona's cloned voice (the 'transfer' you hear)."""
+    persona = _persona_by_name(read_active_persona_name())
+    print(f"MAC_PERSONA::{persona['name']}", flush=True)
+    print(f"💻 {persona['label']} on the Mac: {command}", flush=True)
+    try:
+        reply = run_task(persona, command, lambda s: print(f"  · {s}", flush=True))
+    except Exception as e:
+        reply = f"hit a snag on the Mac: {e}"
+    print(f"MAC_RESULT::{reply}", flush=True)
+    if speak_result:
+        try:
+            speak(reply, persona["voice"], persona.get("api_key"))
+        except Exception as e:
+            print(f"[tts] {e}", flush=True)
+    return {"persona": persona["name"], "reply": reply}
+
+
 def main():
     if not MINIMAX_KEY:
         print("Set MINIMAX_API_KEY in sahur-brain/.env"); return
@@ -822,4 +857,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Headless single-task mode (phone -> Mac handoff): `python sahur.py task <command>`.
+    # No orb, no mic — just do it and speak the result. Set SAHUR_MAC_SPEAK=0 to stay silent.
+    if len(sys.argv) >= 2 and sys.argv[1] == "task":
+        _cmd = " ".join(sys.argv[2:]).strip()
+        if not _cmd:
+            print("usage: sahur.py task <command>"); sys.exit(2)
+        run_headless_task(_cmd, speak_result=os.environ.get("SAHUR_MAC_SPEAK", "1") != "0")
+    else:
+        main()
