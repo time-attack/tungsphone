@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 load_dotenv(".env")
 
 from actions import Actions, _is_interactive
-from device import DeviceClient
+from iosmcp import IOSMCP
 
 # ---- safety -----------------------------------------------------------------
 
@@ -280,7 +280,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="plan + index but never tap")
     args = ap.parse_args()
 
-    m = DeviceClient()
+    m = IOSMCP()
     try:
         m.health()
     except Exception as e:

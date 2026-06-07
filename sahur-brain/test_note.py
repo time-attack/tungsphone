@@ -11,7 +11,7 @@ Run:
 Then paste the whole output back to me.
 """
 
-from device import DeviceClient
+from iosmcp import IOSMCP
 from actions import Actions
 
 
@@ -34,7 +34,7 @@ def show(acts, label):
 
 
 def main():
-    m = DeviceClient()
+    m = IOSMCP()
     try:
         m.health()
         print("✅ device control server reachable")

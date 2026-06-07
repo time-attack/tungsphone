@@ -36,7 +36,7 @@ import threading
 import conversation
 from flavor import flavor_line, closing_line
 from intents import route as fast_route
-from device import DeviceClient
+from iosmcp import IOSMCP
 from music import Music
 from persona import get_persona, system_prompt
 import orchestrator
@@ -242,7 +242,7 @@ def read_active_persona(mcp) -> str:
 
 
 def main():
-    mcp = DeviceClient()
+    mcp = IOSMCP()
     try:
         mcp.health()
     except Exception as e:

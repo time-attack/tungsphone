@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv(".env")
 
 from actions import Actions
-from device import DeviceClient
+from iosmcp import IOSMCP
 
 DEFAULT_APPS = {
     "com.spotify.client": "Spotify",
@@ -51,7 +51,7 @@ def bottom_nav(els, screen_h):
     return out
 
 
-def crawl_app(a: Actions, m: DeviceClient, bundle: str, name: str, max_tabs: int = 6) -> int:
+def crawl_app(a: Actions, m: IOSMCP, bundle: str, name: str, max_tabs: int = 6) -> int:
     print(f"== {name} ({bundle}) ==")
     res = a._launch_verified(bundle)
     if "opened" not in res:
@@ -79,7 +79,7 @@ def crawl_app(a: Actions, m: DeviceClient, bundle: str, name: str, max_tabs: int
 
 
 def main():
-    m = DeviceClient()
+    m = IOSMCP()
     a = Actions(m)
     try:
         m.health()

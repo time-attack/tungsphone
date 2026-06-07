@@ -16,12 +16,12 @@ import sys
 from dotenv import load_dotenv
 
 import deeplinks
-from device import DeviceClient
+from iosmcp import IOSMCP
 
 load_dotenv(".env")
 
 
-def smoke(mcp: DeviceClient):
+def smoke(mcp: IOSMCP):
     print("health:", mcp.health())
     print("screen:", mcp.screen_info())
     try:
@@ -43,12 +43,12 @@ def smoke(mcp: DeviceClient):
 
 
 def main():
-    mcp = DeviceClient()
+    mcp = IOSMCP()
     try:
         mcp.health()
     except Exception as e:
         sys.exit(f"Can't reach device control server at {mcp.base_url}: {e}\n"
-                 f"Fix DEVICE_BASE_URL in .env (use the phone's WiFi IP, e.g. http://192.168.x.x:8090) "
+                 f"Fix IOSMCP_BASE_URL in .env (use the phone's WiFi IP, e.g. http://192.168.x.x:8090) "
                  f"and make sure the device control server server is started on the phone.")
     args = sys.argv[1:]
     if not args:

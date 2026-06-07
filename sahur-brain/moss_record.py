@@ -23,11 +23,11 @@ from dotenv import load_dotenv
 load_dotenv(".env")
 
 from actions import Actions
-from device import DeviceClient
+from iosmcp import IOSMCP
 
 
 def main():
-    m = DeviceClient()
+    m = IOSMCP()
     a = Actions(m)
     try:
         m.health()

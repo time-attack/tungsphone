@@ -1,7 +1,7 @@
 """
-device.py — thin client for the on-device device control server control server.
+iosmcp.py — thin client for the on-device ios-mcp control server.
 
-device control server (https://github.com/witchan/device control server) is a rootless SpringBoard tweak that
+ios-mcp (https://github.com/witchan/ios-mcp) is a rootless jailbreak tweak that
 runs an HTTP JSON-RPC server on the phone (default :8090). It is the "hands and
 eyes" of Sahur: tap, swipe, type, screenshot, read the accessibility tree, launch
 apps, open URL schemes. We just call it over the LAN.
@@ -27,13 +27,13 @@ from typing import Any
 import httpx
 
 
-class DeviceError(RuntimeError):
+class IOSMCPError(RuntimeError):
     pass
 
 
 @dataclass
 class UIElement:
-    """A flattened, tappable accessibility node (device control server schema)."""
+    """A flattened, tappable accessibility node (ios-mcp schema)."""
 
     label: str
     role: str
@@ -44,7 +44,7 @@ class UIElement:
     width: float
     height: float
     enabled: bool
-    tap_x: float | None = None  # exact tap point device control server recommends
+    tap_x: float | None = None  # exact tap point ios-mcp recommends
     tap_y: float | None = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -69,9 +69,9 @@ class UIElement:
         return " ".join(bits)
 
 
-class DeviceClient:
+class IOSMCP:
     def __init__(self, base_url: str | None = None, timeout: float = 60.0):
-        base_url = base_url or os.environ.get("DEVICE_BASE_URL", "http://127.0.0.1:8090")
+        base_url = base_url or os.environ.get("IOSMCP_BASE_URL", "http://127.0.0.1:8090")
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._client = httpx.Client(timeout=timeout)
@@ -124,10 +124,10 @@ class DeviceClient:
         r.raise_for_status()
         body = r.json()
         if "error" in body and body["error"]:
-            raise DeviceError(f"{name}: {body['error']}")
+            raise IOSMCPError(f"{name}: {body['error']}")
         result = body.get("result", {})
         if result.get("isError"):
-            raise DeviceError(f"{name}: {_text_of(result)}")
+            raise IOSMCPError(f"{name}: {_text_of(result)}")
         return _unwrap(result)
 
     def tools_list(self) -> Any:
@@ -216,7 +216,7 @@ class DeviceClient:
                     return result[key]
         if isinstance(result, str):
             return result
-        raise DeviceError(f"screenshot: unexpected result shape {type(result)}")
+        raise IOSMCPError(f"screenshot: unexpected result shape {type(result)}")
 
     def ui_elements(self, max_depth: int = 20, max_elements: int = 2000) -> list[UIElement]:
         raw = self.call("get_ui_elements", {"max_depth": max_depth, "max_elements": max_elements})
@@ -277,9 +277,9 @@ def _coerce_num(v: Any, default: float = 0.0) -> float:
 
 
 def _flatten_elements(raw: Any) -> list[UIElement]:
-    """Parse device control server's get_ui_elements response into a flat list.
+    """Parse ios-mcp's get_ui_elements response into a flat list.
 
-    device control server returns an already-flat list under 'elements', each like:
+    ios-mcp returns an already-flat list under 'elements', each like:
         {"index":0,"text":"WLAN","type":"control","clickable":true,
          "rect":{"x","y","width","height"}, "visible_rect":{...}, "tap":{"x","y"}}
     We also keep a tolerant fallback for nested/legacy shapes (label/frame/children)."""

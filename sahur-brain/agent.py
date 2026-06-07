@@ -47,7 +47,7 @@ from openai import OpenAI
 import flavor
 import orchestrator
 from actions import Actions
-from device import DeviceClient
+from iosmcp import IOSMCP
 from mxtts import MiniMaxTTS
 from music import Music
 from persona import get_persona, system_prompt
@@ -304,7 +304,7 @@ class SahurAgent(Agent):
     phone task (run the orchestrator directly) or chit-chat (let the LLM reply). Persona/voice
     hot-swap when you switch the character on the device."""
 
-    def __init__(self, acts: Actions, mcp: DeviceClient, brain: OpenAI, brain_model: str, persona_name: str):
+    def __init__(self, acts: Actions, mcp: IOSMCP, brain: OpenAI, brain_model: str, persona_name: str):
         self.acts = acts
         self.mcp = mcp
         self.brain = brain                       # smart client for orchestrator/planner/flavor
@@ -425,7 +425,7 @@ async def entrypoint(ctx: agents.JobContext):
         logging.getLogger(_n).setLevel(logging.WARNING)
     await ctx.connect()
 
-    mcp = DeviceClient()
+    mcp = IOSMCP()
     try:
         await asyncio.to_thread(mcp.health)
         print("📲 device control server connected")

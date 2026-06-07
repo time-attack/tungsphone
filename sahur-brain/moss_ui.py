@@ -19,7 +19,7 @@ import os
 import re
 import threading
 
-from device import UIElement
+from iosmcp import UIElement
 
 try:
     from moss import DocumentInfo, MossClient, QueryOptions

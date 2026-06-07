@@ -1,7 +1,7 @@
 """
 actions.py — the device action layer the LLM drives.
 
-Wraps DeviceClient into a small set of high-level actions and exposes them as both:
+Wraps IOSMCP into a small set of high-level actions and exposes them as both:
   - plain Python methods (used by control_proof.py)
   - OpenAI-style tool JSON schemas (used by control_proof.py and the LiveKit agent)
 
@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 import deeplinks
-from device import DeviceClient, UIElement
+from iosmcp import IOSMCP, UIElement
 from moss_ui import MossUI
 
 # Max interactive elements we surface to the model per read (keeps tokens sane +
@@ -67,7 +67,7 @@ def _is_device_trap(label) -> bool:
 
 
 class Actions:
-    def __init__(self, mcp: DeviceClient):
+    def __init__(self, mcp: IOSMCP):
         self.mcp = mcp
         self.moss = MossUI()
         self._screen: tuple[int, int] | None = None
