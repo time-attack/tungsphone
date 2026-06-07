@@ -70,3 +70,34 @@ def load_fresh(max_age: float = _TTL) -> dict:
         except Exception:
             continue
     return out
+
+
+def describe_fresh(max_age: float = _TTL) -> str:
+    """A short human-readable inventory of the results already in memory, fed to the PLANNER
+    so it can REUSE them instead of redundantly re-finding what the user is referring back to.
+    Empty string when nothing fresh is stored. e.g.
+        "links": 1 item(s) about "love" (collected just now)"""
+    now = time.time()
+    parts: list[str] = []
+    for k, rec in _load().items():
+        try:
+            if not isinstance(rec, dict):
+                continue
+            val = rec.get("value")
+            if val in (None, [], "", {}):
+                continue
+            age = now - float(rec.get("ts", 0))
+            if age > max_age:
+                continue
+            n = len(val) if isinstance(val, (list, dict)) else 1
+            mins = int(age // 60)
+            when = "just now" if mins < 1 else f"{mins} min ago"
+            desc = f'"{k}": {n} item(s)'
+            q = (rec.get("query") or "").strip()
+            if q:
+                desc += f' about "{q}"'
+            desc += f" (collected {when})"
+            parts.append(desc)
+        except Exception:
+            continue
+    return "; ".join(parts)

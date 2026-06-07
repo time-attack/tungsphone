@@ -1,7 +1,7 @@
 """
 devtest.py — verify the phone "hands" with NO LLM and NO MiniMax balance needed.
 
-Hits ios-mcp directly: health -> screen info -> frontmost app -> open Spotify via
+Hits device control server directly: health -> screen info -> frontmost app -> open Spotify via
 deep link -> read a few UI elements -> a harmless tap-less screenshot.
 
     python devtest.py            # full smoke test
@@ -16,12 +16,12 @@ import sys
 from dotenv import load_dotenv
 
 import deeplinks
-from iosmcp import IOSMCP
+from device import DeviceClient
 
 load_dotenv(".env")
 
 
-def smoke(mcp: IOSMCP):
+def smoke(mcp: DeviceClient):
     print("health:", mcp.health())
     print("screen:", mcp.screen_info())
     try:
@@ -43,13 +43,13 @@ def smoke(mcp: IOSMCP):
 
 
 def main():
-    mcp = IOSMCP()
+    mcp = DeviceClient()
     try:
         mcp.health()
     except Exception as e:
-        sys.exit(f"Can't reach ios-mcp at {mcp.base_url}: {e}\n"
-                 f"Fix IOSMCP_BASE_URL in .env (use the phone's WiFi IP, e.g. http://192.168.x.x:8090) "
-                 f"and make sure the iOS MCP server is started on the phone.")
+        sys.exit(f"Can't reach device control server at {mcp.base_url}: {e}\n"
+                 f"Fix DEVICE_BASE_URL in .env (use the phone's WiFi IP, e.g. http://192.168.x.x:8090) "
+                 f"and make sure the device control server server is started on the phone.")
     args = sys.argv[1:]
     if not args:
         smoke(mcp)

@@ -47,8 +47,9 @@ from openai import OpenAI
 import flavor
 import orchestrator
 from actions import Actions
-from iosmcp import IOSMCP
+from device import DeviceClient
 from mxtts import MiniMaxTTS
+from music import Music
 from persona import get_persona, system_prompt
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -251,17 +252,52 @@ def build_llm() -> openai.LLM:
     )
 
 
+def _env_or_zshrc(*names: str) -> str:
+    """Find a key from the process env, or fall back to parsing the user's ~/.zshrc
+    (the key lives there but a non-login launch shell often doesn't export it, which
+    silently dropped us to a fallback brain). Accepts several env-var names; the first
+    that resolves wins."""
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v.strip()
+    try:
+        with open(os.path.expanduser("~/.zshrc")) as f:
+            for line in f:
+                for n in names:
+                    m = re.match(rf'\s*export\s+{re.escape(n)}\s*=\s*"?([^"\s]+)"?', line)
+                    if m:
+                        key = m.group(1).strip()
+                        os.environ[n] = key   # cache for child calls this run
+                        return key
+    except Exception:
+        pass
+    return ""
+
+
 def build_brain() -> tuple[OpenAI, str]:
     """The PLANNER/ORCHESTRATOR brain — use a SMART model (this is what plans steps + grounds).
     Priority:
-      1) Claude (if ANTHROPIC_API_KEY in env) -> claude-sonnet-4-6
-      2) a smart model via LiveKit Inference — your EXISTING LiveKit creds, NO new key
-      3) MiniMax fallback.
-    Override the model with SAHUR_BRAIN_MODEL. (TTS stays MiniMax cloned voices; STT stays LiveKit.)"""
-    ak = os.environ.get("ANTHROPIC_API_KEY")
+      1) Qwen via Alibaba Cloud (DASHSCOPE_API_KEY / QWEN_API_KEY in env, or read from
+         ~/.zshrc) -> qwen-max-latest, via the DashScope OpenAI-compatible endpoint
+      2) Claude (ANTHROPIC_API_KEY) -> claude-sonnet-4-6  [legacy fallback]
+      3) a smart model via LiveKit Inference — your EXISTING LiveKit creds, NO new key
+      4) MiniMax fallback.
+    Override the model with SAHUR_BRAIN_MODEL and the endpoint with DASHSCOPE_BASE_URL.
+    (TTS stays MiniMax cloned voices; STT stays LiveKit.)"""
+    qk = _env_or_zshrc("DASHSCOPE_API_KEY", "QWEN_API_KEY", "ALIBABA_API_KEY")
+    if qk:
+        model = os.environ.get("SAHUR_BRAIN_MODEL", "qwen-max-latest")
+        # International Model Studio endpoint; set DASHSCOPE_BASE_URL to the China
+        # endpoint (https://dashscope.aliyuncs.com/compatible-mode/v1) if needed.
+        base = os.environ.get("DASHSCOPE_BASE_URL",
+                              "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        print(f"🧠 brain: {model} (Alibaba Cloud / Qwen)")
+        return OpenAI(api_key=qk, base_url=base), model
+    ak = _env_or_zshrc("ANTHROPIC_API_KEY")
     if ak:
         model = os.environ.get("SAHUR_BRAIN_MODEL", "claude-sonnet-4-6")
-        print(f"🧠 brain: {model} (Anthropic / Claude)")
+        print(f"🧠 brain: {model} (Anthropic / Claude — legacy fallback)")
         return OpenAI(api_key=ak, base_url="https://api.anthropic.com/v1/"), model
     try:
         from livekit.agents.inference._utils import create_access_token, get_default_inference_url
@@ -279,13 +315,16 @@ class SahurAgent(Agent):
     phone task (run the orchestrator directly) or chit-chat (let the LLM reply). Persona/voice
     hot-swap when you switch the character on the device."""
 
-    def __init__(self, acts: Actions, mcp: IOSMCP, brain: OpenAI, brain_model: str, persona_name: str):
+    def __init__(self, acts: Actions, mcp: DeviceClient, brain: OpenAI, brain_model: str, persona_name: str):
         self.acts = acts
         self.mcp = mcp
         self.brain = brain                       # smart client for orchestrator/planner/flavor
         self.brain_model = brain_model
         self.persona_name = persona_name
         cfg = get_persona(persona_name)
+        # Theme loop played on the laptop (ffplay) while a task runs — no TTS during work.
+        self.music = Music()
+        self.music.set_track(cfg.get("music", ""))
         super().__init__(instructions=cfg["persona"] + "\n\n" + CHAT_INSTRUCTIONS)
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
@@ -295,6 +334,7 @@ class SahurAgent(Agent):
             self.persona_name = name
             cfg = get_persona(name)
             await self.update_instructions(cfg["persona"] + "\n\n" + CHAT_INSTRUCTIONS)
+            self.music.set_track(cfg.get("music", ""))
             try:
                 self.session.tts = build_tts(cfg)
                 print(f"🔁 switched to {cfg['display']}")
@@ -332,13 +372,8 @@ class SahurAgent(Agent):
             raise StopResponse()
 
         print(f"📱 task: {text}")
-        # immediate in-character "on it" so there's feedback while the work runs
-        try:
-            quip = await asyncio.to_thread(flavor.flavor_line, self.brain, self.brain_model,
-                                           self.persona_name, text)
-        except Exception:
-            quip = ""
-        await self.session.say(quip or "on it!", allow_interruptions=False)
+        # No TTS: don't talk. Just start the theme loop and immediately get to work.
+        await asyncio.to_thread(self.music.start)
 
         # Compound / multi-app / batch -> full planner; single intent -> fast single-shot path.
         runner = orchestrator.run_goal if _needs_planner(text) else orchestrator.run_simple
@@ -351,14 +386,11 @@ class SahurAgent(Agent):
         except Exception as e:
             print(f"❌ task failed: {e}")
             summary = f"couldn't finish that — {str(e)[:80]}"
+        finally:
+            # kill the music the instant the work ends
+            await asyncio.to_thread(self.music.stop)
 
-        # speak the result in character, then SKIP the default LLM reply for this turn
-        try:
-            closing = await asyncio.to_thread(flavor.closing_line, self.brain, self.brain_model,
-                                              self.persona_name, summary)
-        except Exception:
-            closing = ""
-        await self.session.say(closing or summary, allow_interruptions=True)
+        # Silent finish — no spoken summary. Skip the default LLM reply for this turn.
         raise StopResponse()
 
     async def tts_node(self, text, model_settings):
@@ -404,12 +436,12 @@ async def entrypoint(ctx: agents.JobContext):
         logging.getLogger(_n).setLevel(logging.WARNING)
     await ctx.connect()
 
-    mcp = IOSMCP()
+    mcp = DeviceClient()
     try:
         await asyncio.to_thread(mcp.health)
-        print("📲 ios-mcp connected")
+        print("📲 device control server connected")
     except Exception as e:
-        print(f"⚠️  ios-mcp not reachable ({e}) — voice works, phone actions won't until `iproxy 8090 8090`.")
+        print(f"⚠️  device control server not reachable ({e}) — voice works, phone actions won't until `iproxy 8090 8090`.")
     acts = Actions(mcp)
     brain, brain_model = build_brain()        # smart planner/orchestrator brain
 

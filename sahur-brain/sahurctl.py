@@ -11,7 +11,7 @@ so it can never bootloop.
 
 import sys, time
 from dotenv import load_dotenv
-from iosmcp import IOSMCP
+from device import DeviceClient
 
 load_dotenv(".env")
 SHOW_FILE = "/var/mobile/Library/Caches/sahur_show.txt"
@@ -28,7 +28,7 @@ def set_show(m, on: bool):
 def main():
     arg = (sys.argv[1] if len(sys.argv) > 1 else "show").lower()
     on = arg in ("show", "on", "1")
-    m = IOSMCP()
+    m = DeviceClient()
     print("health:", m.health())
     print(set_show(m, on))
 

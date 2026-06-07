@@ -1,7 +1,7 @@
 """
 actions.py — the device action layer the LLM drives.
 
-Wraps IOSMCP into a small set of high-level actions and exposes them as both:
+Wraps DeviceClient into a small set of high-level actions and exposes them as both:
   - plain Python methods (used by control_proof.py)
   - OpenAI-style tool JSON schemas (used by control_proof.py and the LiveKit agent)
 
@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 import deeplinks
-from iosmcp import IOSMCP, UIElement
+from device import DeviceClient, UIElement
 from moss_ui import MossUI
 
 # Max interactive elements we surface to the model per read (keeps tokens sane +
@@ -50,9 +50,24 @@ _ROW_EXCL_EXACT = {
 _CONV_HINT = ("active", "ago", "new message", "new messages", "sent ", "unread",
               "liked", "typing", "tap to", "·", "delivered", "seen")
 
+# The device/output picker. A "play"/"shuffle" target must NEVER resolve to one of
+# these: Moss (and a naive substring rank) score "Bluetooth and AirPlay" high for
+# "play" because "air·play" contains "play" — tapping it opens the Connect-to-a-device
+# sheet instead of playing anything. Drop these for primary-media actions so a real
+# Play control (or an honest "nothing to play") wins instead.
+_DEVICE_TRAP_SUB = (
+    "airplay", "bluetooth", "connect to a device", "connect to device",
+    "connect device", "devices", "speaker", "chromecast", "cast to",
+)
+
+
+def _is_device_trap(label) -> bool:
+    low = (label or "").strip().lower()
+    return bool(low) and any(s in low for s in _DEVICE_TRAP_SUB)
+
 
 class Actions:
-    def __init__(self, mcp: IOSMCP):
+    def __init__(self, mcp: DeviceClient):
         self.mcp = mcp
         self.moss = MossUI()
         self._screen: tuple[int, int] | None = None
@@ -77,6 +92,19 @@ class Actions:
                     time.sleep(0.4)
                     self._clear_search_field()
                     return True
+        return False
+
+    def _focus_input_field(self) -> bool:
+        """Focus a text-entry field so typing lands. Handles a TOP search field (TikTok,
+        Spotify, Safari) AND a BOTTOM compose field (Messages/WhatsApp/IG DM). The old
+        _focus_search_field only looked above y=400, so message boxes were never focused —
+        that's why the link never got typed."""
+        if self._focus_search_field():
+            return True
+        field = self._compose_field()
+        if field:
+            self.mcp.tap(*field.center); time.sleep(0.35)
+            return True
         return False
 
     def _clear_search_field(self) -> bool:
@@ -104,7 +132,7 @@ class Actions:
         return ("on screen: " + " | ".join(parts)) if parts else "on screen: (no labeled elements)"
 
     def _read_elements(self, tries: int = 6, delay: float = 0.35) -> list[UIElement]:
-        """Read UI elements, retrying while ios-mcp's accessibility runtime warms
+        """Read UI elements, retrying while device control server's accessibility runtime warms
         up after an app launch (it reports 'axRuntimeMode: inactive' for ~1-3s)."""
         last = None
         for _ in range(tries):
@@ -136,7 +164,7 @@ class Actions:
     # ---- actions (return short strings the model can read) -----------------
 
     def _launch_verified(self, bundle_id: str) -> str:
-        """Launch and confirm it's frontmost. ios-mcp's immediate 'frontmost still ...'
+        """Launch and confirm it's frontmost. device control server's immediate 'frontmost still ...'
         error is often spurious (the app just hadn't switched yet), so ignore it and
         poll frontmost instead, with one retry."""
         for _ in range(2):
@@ -264,6 +292,7 @@ class Actions:
                 ll = lab.lower()
                 return (e.center[1] > 150 and _is_interactive(e) and len(lab) > 6
                         and ll not in _ROW_EXCL_EXACT
+                        and not _is_dead_label(lab) and not _is_sponsored_label(lab)
                         and not any(b in ll for b in _ROW_EXCL_SUB))
             rows = [e for e in els if _content_row(e)]
             # for "first conversation/message/chat", prefer rows that look like a chat
@@ -307,6 +336,12 @@ class Actions:
                         f"screen did NOT change — read_screen and choose a different target.")
 
         matches = self.moss.find(els, app, target, top_k=6)
+        # A play/shuffle target reaching here means there was no exact hero Play button.
+        # Never let it fall onto the device picker ("Bluetooth and AirPlay" et al.) —
+        # tapping that opens Connect-to-a-device, not playback. Better to report nothing
+        # matched (honest failure) than to fake a ✓ by opening the wrong sheet.
+        if _is_primary_action(target):
+            matches = [m for m in matches if not _is_device_trap(m.get("label"))]
         if not matches:
             self._log_metric(target, app, changed=False)
             return f"no element matched '{target}' on {app}. Call read_screen to see options."
@@ -354,8 +389,14 @@ class Actions:
                 continue
             if low.startswith("type:") or low.startswith("type "):
                 txt = s.split(":", 1)[1].strip() if ":" in s else s[5:].strip()
-                self._focus_search_field()   # make sure the text field is focused first
+                self._focus_input_field()   # focus the field first — top search OR bottom compose
                 out.append(self.type_text(txt)); time.sleep(0.5)
+            elif low in ("send", "send message", "send it", "tap send"):
+                # In a chat, Send is the ↑ arrow — NOT the return key (which inserts a newline).
+                if self._tap_send_button():
+                    out.append("tapped Send ✓"); time.sleep(0.7)
+                else:
+                    out.append("send: no Send button found")
             elif low.startswith("swipe") or low.startswith("scroll") or low.startswith("next video"):
                 direction = "down" if "down" in low else ("left" if "left" in low else ("right" if "right" in low else "up"))
                 out.append(self.swipe(direction)); time.sleep(0.7)
@@ -401,6 +442,9 @@ class Actions:
         while len(found) < count and scrolls <= max_scrolls:
             for e in self._read_elements():
                 lab = (e.label or e.value or "").strip()
+                # skip ads and any greyed/blacked-out/'null' tile (checks all node fields)
+                if _is_sponsored_label(lab) or _is_dead_cell(e):
+                    continue
                 likes = _parse_likes(lab)
                 if likes < min_likes:
                     continue
@@ -480,12 +524,239 @@ class Actions:
                 return True
         return False
 
+    # ---- messaging (generic compose-and-send: iMessage / WhatsApp / IG DM) ----
+    # NOT per-app logic — every chat app shares the same shape: a thread has a compose
+    # field pinned to the BOTTOM and a Send control beside it. The old do_sequence path
+    # failed here because it focused only TOP search fields, typed AFTER tapping send, and
+    # had no real send. These helpers verify each stage on the live screen so they can't
+    # fake success (open the wrong thread, type into nothing, or "send" with no send).
+
+    # The compose placeholder is labelled EXACTLY one of these (this device collapses every
+    # role to 'control', so the label — not the role — is what identifies the field).
+    _COMPOSE_EXACT = ("message", "imessage", "text message", "text message·sms",
+                      "write a message", "type a message", "send a message", "ask anything")
+
+    def _compose_field(self) -> UIElement | None:
+        """The message INPUT field — the bottom-most text-entry element on a thread screen.
+        iOS labels its placeholder 'Message'/'iMessage'/'Text Message'. Retries once because
+        a single early read can miss it (the false-negative that made us bail on a real thread).
+        Chat BUBBLES also carry 'iMessage'/'❤️' in their label — we exclude those ('Your
+        iMessage, …' sent bubbles, and any label with a trailing ', H:MM AM/PM' timestamp)
+        so a bubble is never mistaken for the compose box."""
+        for attempt in range(2):
+            els = self._read_elements(tries=3)
+            _w, h = self._screen_size()
+            h = h or 844
+            # 1) EXACT placeholder label, lowest on screen — the strongest signal.
+            exact = [e for e in els
+                     if (e.label or e.value or "").strip().lower() in self._COMPOSE_EXACT
+                     and e.center[1] > h * 0.4]
+            if exact:
+                exact.sort(key=lambda e: e.center[1])
+                return exact[-1]
+            # 2) fallback: a texty control low on screen that ISN'T a chat bubble.
+            cands = []
+            for e in els:
+                role = (e.role or "").lower()
+                lab = (e.label or e.value or "").strip().lower()
+                if not lab or _is_chat_bubble(lab):
+                    continue
+                is_field = ("textfield" in role or "textview" in role or "field" in role
+                            or "search" in role or any(hk in lab for hk in self._COMPOSE_EXACT))
+                if is_field and e.center[1] > h * 0.4:   # the compose box lives low on screen
+                    cands.append(e)
+            if cands:
+                cands.sort(key=lambda e: e.center[1])
+                return cands[-1]                          # bottom-most = the compose box
+            time.sleep(0.5)                               # let a lagging tree settle, then retry
+        return None
+
+    def _in_thread(self) -> bool:
+        """True if we're INSIDE a conversation (a bottom compose field is present), not on
+        the conversation LIST. Used to verify a thread actually opened before we type."""
+        return self._compose_field() is not None
+
+    def _wait_in_thread(self, timeout: float = 3.5) -> bool:
+        """Poll for the compose field after a tap. A freshly opened thread ANIMATES in and
+        the accessibility tree lags ~1-2s, so a single early read reports 'still on the list'
+        — a false negative. That false negative is what made us back OUT of the thread we'd
+        just correctly opened and tap around the list. Poll until the field shows up."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._in_thread():
+                return True
+            time.sleep(0.3)
+        return False
+
+    def _messages_back_to_list(self) -> None:
+        """If Messages reopened straight into a thread, step back to the list so we can pick
+        the RIGHT person. The back affordance is the top-left 'Messages'/back chevron.
+        ONLY acts when we're actually in a thread — on the list the top-left control is
+        'Edit', and tapping it drops us into selection mode (the 'random tapping' bug)."""
+        if not self._in_thread():
+            return
+        els = self._read_elements(tries=2)
+        for e in els:
+            lab = (e.label or "").strip().lower()
+            # never 'edit' — that's a LIST control, not a back affordance. The Messages back
+            # button is top-left and often labelled with the unread badge ('9 unread'), not
+            # the word 'Messages' — accept that too.
+            if e.center[1] < 130 and e.center[0] < 160 and (
+                    lab in ("messages", "back", "chats", "conversations")
+                    or "unread" in lab):
+                self.mcp.tap(*e.center); time.sleep(0.6)
+                return
+
+    def open_conversation(self, recipient: str, app: str = "Messages") -> tuple[bool, str]:
+        """Open the named person's CHAT THREAD and verify we landed in it (a compose field
+        is on screen). Tries a couple of phrasings; honest failure if the thread won't open."""
+        self.open_app(app, "open"); self._wait_loaded(); time.sleep(0.5)
+        if self._in_thread():
+            self._messages_back_to_list()             # don't assume the last thread is the right one
+        for phrase in (f"{recipient} conversation", recipient, f"chat with {recipient}"):
+            self.tap_semantic(phrase)
+            # POLL for the thread (don't judge on a single early read) — the tree lags the
+            # open animation, and judging too soon backed us out of the correct thread.
+            if self._wait_in_thread(timeout=3.5):
+                return True, f"opened {recipient}'s thread"
+            # genuinely still on the list — step back out (no-op if we're not in a thread)
+            # and try the next phrasing.
+            self._messages_back_to_list(); time.sleep(0.4)
+        return False, f"couldn't open {recipient}'s conversation (stayed on the list)"
+
+    def _tap_send_button(self) -> bool:
+        """Tap the Send control (the ↑ arrow) in the bottom compose strip. Never an enter
+        key (Return just inserts a newline in iMessage) and never a list row labelled 'send'.
+        The arrow sits at the FAR RIGHT of the compose row, below mid-screen — among any
+        'Send' elements we pick the right-most one in the lower half (geometry, not order)."""
+        els = self._read_elements(tries=2)
+        _w, h = self._screen_size(); h = h or 844
+        sends = [e for e in els
+                 if (e.label or "").strip().lower() in ("send", "send message",
+                                                         "send imessage", "send text")
+                 and e.center[1] > h * 0.4]          # in the compose strip, not a top control
+        if sends:
+            sends.sort(key=lambda e: e.center[0])     # right-most = the ↑ send arrow
+            self.mcp.tap(*sends[-1].center); return True
+        # fallback: any element labelled exactly 'send' (right-most wins)
+        any_send = [e for e in els if (e.label or "").strip().lower() == "send"]
+        if any_send:
+            any_send.sort(key=lambda e: e.center[0])
+            self.mcp.tap(*any_send[-1].center); return True
+        return False
+
+    def send_in_thread(self, text: str) -> tuple[bool, str]:
+        """In an already-open thread: focus the compose field, type `text`, tap Send, and
+        VERIFY the text left the field (became a sent bubble). Screen is the judge."""
+        field = self._compose_field()
+        if not field:
+            return False, "no message field on screen — not in a conversation"
+        self.mcp.tap(*field.center); time.sleep(0.4)
+        self.type_text(text); time.sleep(0.5)
+        if not self._tap_send_button():
+            return False, "typed it but couldn't find the Send button"
+        time.sleep(0.9)
+        # VERIFY: after sending, the compose field should be empty again (text became a
+        # bubble). If our text is still sitting in the field, it did NOT send.
+        after = self._compose_field()
+        still = ((after.value or after.label or "").strip().lower()) if after else ""
+        needle = (_needle_token(text) or "").lower()
+        if needle and needle in still:
+            return False, "tapped Send but the text is still in the box — it didn't send"
+        return True, "sent ✓"
+
     def press_home(self) -> str:
         self.mcp.press_home()
         return "pressed home"
 
 
 # ---- element matching ------------------------------------------------------
+
+# Markers that mean a feed cell / video is a paid AD, not organic content. We never
+# open or collect these (the user got an accidental tap on a sponsored grid tile). Kept
+# precise — bare "ad" is excluded so it can't match "add"/"ready"/"read".
+_SPONSORED_RE = _re_sponsored = __import__("re").compile(
+    r"(sponsored|promoted|paid partnership|advertisement|#ad\b|\bad\s*·|·\s*ad\b)", __import__("re").I)
+
+
+def _is_sponsored_label(text: str) -> bool:
+    """True if THIS element's label marks it as an ad (e.g. a 'Sponsored' grid tile)."""
+    return bool(_SPONSORED_RE.search(text or ""))
+
+
+def _screen_is_sponsored(els) -> bool:
+    """True if the CURRENT screen (e.g. the open player) is a sponsored/ad video."""
+    return any(_is_sponsored_label((e.label or e.value or "")) for e in (els or []))
+
+
+# A sent/received message BUBBLE in a thread. iMessage labels these like
+# "Your iMessage, <text>" / "<contact>, <text>, 8:08 AM" — they carry 'imessage' and
+# timestamps, so they must NOT be mistaken for the compose field or the contact row.
+_BUBBLE_RE = __import__("re").compile(
+    r"(^your (?:imessage|sms|text)\b|,\s*\d{1,2}:\d{2}\s*[ap]m\b)", __import__("re").I)
+
+
+def _is_chat_bubble(label: str) -> bool:
+    """True if this label is a conversation message bubble, not a control."""
+    return bool(_BUBBLE_RE.search(label or ""))
+
+
+# A cell/video that didn't load — it renders as a greyed/blacked-out tile and the
+# accessibility tree exposes the literal string "null" (or nil/nan/undefined/none),
+# which can sit in the label, the VALUE, or the IDENTIFIER (not just the label). We must
+# never open or collect these — skip to a real one in the grid instead.
+#   - \b keeps it safe: "null" matches the word, never "annul"/"vanilla"/"banana".
+#   - "(null)" / "<null>" (Obj-C NSNull printouts) are caught explicitly.
+_re = __import__("re")
+_DEAD_RE = _re.compile(r"(\bnull\b|\bnil\b|\bnan\b|\bundefined\b|\bnone\b|\(null\)|<null>|null null)", _re.I)
+# A real TikTok result cell always carries engagement (likes/views/comments/shares) or a
+# real handle/hashtag. We use this as POSITIVE proof a tile is a genuine video before we
+# ever tap it — a greyed/null tile has none of this.
+_ALIVE_RE = _re.compile(r"(\d[\d,.]*\s*[KMB]?\s*(likes?|views?|comments?|shares?|plays?)|@\w|#\w)", _re.I)
+
+
+def _cell_text(e) -> str:
+    """All text a node exposes (label + value + identifier) — 'null' can hide in any of them."""
+    return " ".join(s for s in ((getattr(e, "label", "") or ""),
+                                (getattr(e, "value", "") or ""),
+                                (getattr(e, "identifier", "") or "")) if s).strip()
+
+
+def _is_dead_label(text: str) -> bool:
+    """True if this text marks a failed/'null'/blacked-out tile with no real content."""
+    t = (text or "").strip()
+    return len(t) <= 1 or bool(_DEAD_RE.search(t))
+
+
+def _is_dead_cell(e) -> bool:
+    """True if this ELEMENT is a greyed/null/failed video tile — checks label, value AND
+    identifier, and treats a tile with a 'null' marker and NO real video signal as dead."""
+    blob = _cell_text(e)
+    if not blob or len(blob) <= 1:
+        return True
+    if _DEAD_RE.search(blob):
+        return True                       # explicit 'null'/'nil'/'(null)' anywhere → dead
+    return False
+
+
+def _is_live_cell(e) -> bool:
+    """POSITIVE proof a tile is a real, loaded video (engagement count or @handle/#tag).
+    Used to gate which grid cell we OPEN, so a greyed tile with no signal is never tapped."""
+    return bool(_ALIVE_RE.search(_cell_text(e))) and not _is_dead_cell(e)
+
+
+def _screen_is_dead(els) -> bool:
+    """True if the CURRENT player is a 'null'/blacked-out video (no real content loaded).
+    A loaded video screen has many real labels AND a live signal (likes/handle); a dead one
+    shows a 'null' marker on a near-empty screen or simply has no video signal at all."""
+    blobs = [_cell_text(e) for e in (els or [])]
+    real = [b for b in blobs if len(b) > 1]
+    if not real:
+        return True
+    has_null = any(_DEAD_RE.search(b) for b in real)
+    has_signal = any(_ALIVE_RE.search(b) for b in real)
+    # dead if a null marker dominates a sparse screen, OR there's simply no video signal
+    return (has_null and len(real) <= 4) or (not has_signal)
 
 
 def _parse_likes(label: str) -> int:
@@ -511,6 +782,20 @@ def _video_title(label: str) -> str:
     """Trim a TikTok result label down to a short human title."""
     t = label.split(". Photo")[0].split(". Top liked")[0]
     return t.strip()[:70]
+
+
+def _needle_token(text: str) -> str:
+    """A short distinctive token from `text` (a TikTok short-code, a URL tail, or the first
+    long word) — used to check on-screen whether typed text actually landed."""
+    import re
+    m = re.search(r"(?:vm\.)?tiktok\.com/(\w{6,})", text or "")
+    if m:
+        return m.group(1)
+    m = re.search(r"https?://\S{8,}", text or "")
+    if m:
+        return m.group(0)[-10:]
+    words = re.findall(r"\w{6,}", text or "")
+    return words[0] if words else ""
 
 
 def _screen_sig(els: list[UIElement]) -> str:

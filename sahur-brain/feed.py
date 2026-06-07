@@ -24,7 +24,8 @@ import time
 import deeplinks
 import procedures
 import fields                       # generic, app-agnostic value reader (K/M/B/raw/spelled)
-from actions import _parse_likes
+from actions import (_parse_likes, _is_sponsored_label, _screen_is_sponsored,
+                     _is_dead_label, _is_dead_cell, _is_live_cell, _screen_is_dead)
 from tiktok import on_video, on_results   # "in a player?" / "on the results grid?" checks
 
 _URL = re.compile(r"https?://\S+")
@@ -95,7 +96,13 @@ def collect_links(a, m, app, query, min_likes=100000, count=5, max_videos=60, lo
     first, t0 = None, time.time()
     while first is None and time.time() - t0 < 5:
         for e in a._read_elements():
-            if _parse_likes(e.label or e.value or "") > 0:
+            # POSITIVE allowlist: only open a cell that PROVES it's a real, loaded video
+            # (real engagement / @handle / #tag). A greyed/blacked-out/'null' tile carries
+            # none of that, so it can never be picked — this is the hard guarantee we never
+            # tap a dead tile again. Sponsored tiles are excluded too.
+            if _is_sponsored_label(e.label or e.value or ""):
+                continue
+            if _is_live_cell(e):
                 first = e; break
         if first is None:
             time.sleep(0.5)
@@ -111,6 +118,14 @@ def collect_links(a, m, app, query, min_likes=100000, count=5, max_videos=60, lo
     while len(links) < count and n < max_videos and fails < 6:
         try:
             els = a._read_elements()
+            if _screen_is_sponsored(els):    # this player item is a paid ad — skip it
+                log("  · skipping sponsored video")
+                a.swipe("up"); time.sleep(1.0); n += 1
+                continue
+            if _screen_is_dead(els):         # failed/'null'/blacked-out video — skip it
+                log("  · skipping null/blacked-out video")
+                a.swipe("up"); time.sleep(1.0); n += 1
+                continue
             likes = fields.read_field(els, "likes")   # generic reader (K/M/B/raw/spelled)
             uid = _uid(els)
             if likes >= min_likes and uid not in seen:

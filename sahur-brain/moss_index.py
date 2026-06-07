@@ -9,7 +9,7 @@ to refresh (already-seen screens are skipped).
     python moss_index.py                 # default demo apps
     python moss_index.py com.x com.y     # specific bundle ids
 
-Needs ios-mcp reachable (iproxy) + MOSS_PROJECT_ID/KEY in .env.
+Needs device control server reachable (iproxy) + MOSS_PROJECT_ID/KEY in .env.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv(".env")
 
 from actions import Actions
-from iosmcp import IOSMCP
+from device import DeviceClient
 
 DEFAULT_APPS = {
     "com.spotify.client": "Spotify",
@@ -51,7 +51,7 @@ def bottom_nav(els, screen_h):
     return out
 
 
-def crawl_app(a: Actions, m: IOSMCP, bundle: str, name: str, max_tabs: int = 6) -> int:
+def crawl_app(a: Actions, m: DeviceClient, bundle: str, name: str, max_tabs: int = 6) -> int:
     print(f"== {name} ({bundle}) ==")
     res = a._launch_verified(bundle)
     if "opened" not in res:
@@ -79,12 +79,12 @@ def crawl_app(a: Actions, m: IOSMCP, bundle: str, name: str, max_tabs: int = 6) 
 
 
 def main():
-    m = IOSMCP()
+    m = DeviceClient()
     a = Actions(m)
     try:
         m.health()
     except Exception as e:
-        sys.exit(f"ios-mcp unreachable: {e} (run iproxy 8090 8090, start iOS MCP)")
+        sys.exit(f"device control server unreachable: {e} (run iproxy 8090 8090, start device control server)")
     if not a.moss.enabled:
         sys.exit("Moss disabled — set MOSS_PROJECT_ID/MOSS_PROJECT_KEY in .env")
 

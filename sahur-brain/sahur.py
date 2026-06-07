@@ -8,7 +8,7 @@ talks back in his cloned voice. Right-click the orb to switch persona.
   press orb → 🎙 listen → 📸 screenshot + see clickable elements → 🧠 MiniMax decides
             → 🖱 click / type / open → repeat → 🗣 reply (cloned voice)
 
-No jailbreak. No server. No CLI to watch — the floating orb shows everything. Nothing
+No device extension. No server. No CLI to watch — the floating orb shows everything. Nothing
 here is shared with the iPhone project; this file is self-contained.
 
 Run:  ./scripts/run-mac.sh        (first run: grant Accessibility + Microphone)

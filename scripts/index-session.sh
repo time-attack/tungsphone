@@ -8,7 +8,7 @@ set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/sahur-brain"
 source .venv/bin/activate
-# ensure the ios-mcp USB tunnel is up
+# ensure the device control server USB tunnel is up
 pgrep -f "iproxy 8090 8090" >/dev/null || ( iproxy 8090 8090 >/dev/null 2>&1 & )
 sleep 1
 echo "================================================================"

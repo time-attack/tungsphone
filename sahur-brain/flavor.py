@@ -74,15 +74,16 @@ _FLAVOR_SYS = {
         "SUBSCRIBE!'"
     ),
     "biden": (
-        "You are a comedic parody of JOE BIDEN as a phone assistant. Speak in his folksy cadence: "
-        "'Look, folks...', 'Here's the deal...', 'I'm not joking', 'no malarkey', 'come on, man', "
-        "'literally', and sometimes drop to a dramatic whisper. React to the user's request warmly, "
-        "maybe with a quick aside about Scranton, the middle class, working folks, Amtrak, or ice "
-        "cream, then catch yourself ('...anyway') and say you'll handle it. ONE short, folksy, funny "
-        "sentence. Light political parody, wholesome, never hateful. Max ~35 words. Examples: "
-        "'Look, folks, here's the deal — I'll play Drake, no malarkey; reminds me of the jukebox "
-        "back in Scranton, anyway, I'm on it.' / "
-        "'Come on, man, checking your DMs is literally the easiest thing — my word as a Biden, done.'"
+        "You are a comedic parody of JOE BIDEN as a phone assistant, talking EXACTLY like he did at "
+        "the 2024 debate against Trump — halting, raspy, low-energy. Start a thought, lose it "
+        "mid-sentence, trail off with '...' and a pause, mumble, then grab it back ('anyway', 'the "
+        "point is', 'here's the deal'). Whisper half the words. Slip in his tics ('Look, folks...', "
+        "'I'm not joking', 'no malarkey', 'come on, man') and let a number wander or a famous line "
+        "fumble (e.g. 'we finally beat Medicare', a stray Scranton/Amtrak aside) before catching "
+        "yourself. Then say you'll handle it. ONE short, rambling-but-recovering sentence. Light "
+        "political parody, wholesome, never hateful. Max ~40 words. Examples: "
+        "'Look, here's the deal, I'll play Drake — we finally beat... anyway, no malarkey, I'm on it.' / "
+        "'Come on, man, your DMs, they're... the point is, literally the easiest thing, done.'"
     ),
     "obama": (
         "You are a comedic parody of BARACK OBAMA as a phone assistant. Speak in his measured, "
@@ -132,29 +133,55 @@ def _strip(txt: str) -> str:
     return txt.strip().strip('"').strip()
 
 
+# Markers that mean the task did NOT fully succeed. If the summary contains any of
+# these, the closing line must be HONEST about it and must NOT claim success — this is
+# the fix for the persona cheerfully saying "consider it done" after a failed step.
+_FAIL_MARKERS = (
+    "couldn't", "could not", "can't", "cannot", "partly done", "✗", "not on screen",
+    "didn't go in", "did not go in", "don't have", "do not have", "failed", "no element",
+    "couldn't plan", "i don't see", "i couldn't", "couldn't make a plan", "no visible change",
+)
+
+
+def _looks_failed(summary: str) -> bool:
+    s = (summary or "").lower()
+    return any(m in s for m in _FAIL_MARKERS)
+
+
 _CLOSE_TMPL = (
-    'You (in character) JUST FINISHED this task: "{summary}". In ONE short spoken sentence, '
-    "confirm it's done AND ask if they need anything else — in character. "
-    "Output ONLY the spoken line: no quotes, no emojis, no stage directions."
+    "Here is the GROUND-TRUTH RESULT of what the user just asked you to do — it is what "
+    'ACTUALLY happened on the phone. Do not contradict it:\n"{summary}"\n\n'
+    "Say ONE or two short spoken sentences, in character, that:\n"
+    "- If it SUCCEEDED, confirm what got done. If the result contains specific information "
+    "the user asked for (messages, names, times, an answer), RELAY that information accurately "
+    "in your reply — the user needs to actually hear it.\n"
+    "- If it FAILED or only partly worked, say so HONESTLY and plainly. Do NOT claim it's done, "
+    "do NOT pretend it worked. You can still be in character about it.\n"
+    "Then ask if they need anything else. Output ONLY the spoken line: no quotes, no emojis, "
+    "no stage directions."
 )
 
 
 def closing_line(client, model: str, persona: str, summary: str) -> str:
-    """A short in-character wrap-up: what got done + 'anything else?'. Falls back to a
-    plain template so the agent always closes the loop even if the model call fails."""
+    """A short in-character wrap-up that RELAYS the real result — confirming success and
+    reading back any answer, or owning a failure honestly (never faking 'done'). Falls back
+    to the plain summary so the truth is spoken even if the model call fails."""
     sysp = _FLAVOR_SYS.get((persona or "").lower(), _FLAVOR_SYS["sahur"])
     try:
         r = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": sysp},
                       {"role": "user", "content": _CLOSE_TMPL.format(summary=summary)}],
-            temperature=0.9, max_tokens=120,
+            temperature=0.9, max_tokens=160,
         )
         line = _strip(r.choices[0].message.content or "")
         if line:
             return line
     except Exception as e:
         print(f"[closing] {e}")
+    # Honest fallback: never prefix a failure with "done".
+    if _looks_failed(summary):
+        return f"{summary}. anything else?"
     return f"done — {summary}. anything else?"
 
 

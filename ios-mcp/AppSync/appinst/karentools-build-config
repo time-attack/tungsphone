@@ -1,5 +1,0 @@
-projectType="iOS-theos"
-bundleIdentifier="ai.akemi.appinst"
-miniOSVersion="5.0"
-maxiOSVersion="latest"
-rootlessSupport=1

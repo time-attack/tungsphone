@@ -1,7 +1,7 @@
 """
 test_note.py — ZERO-LLM, ZERO-TOKEN check of the Notes "new note + type" flow.
 
-This costs you NOTHING (no MiniMax/LiveKit calls) — it drives ios-mcp directly so we can SEE
+This costs you NOTHING (no MiniMax/LiveKit calls) — it drives device control server directly so we can SEE
 exactly what the Notes screen looks like and where the taps land.
 
 Run:
@@ -11,7 +11,7 @@ Run:
 Then paste the whole output back to me.
 """
 
-from iosmcp import IOSMCP
+from device import DeviceClient
 from actions import Actions
 
 
@@ -34,12 +34,12 @@ def show(acts, label):
 
 
 def main():
-    m = IOSMCP()
+    m = DeviceClient()
     try:
         m.health()
-        print("✅ ios-mcp reachable")
+        print("✅ device control server reachable")
     except Exception as e:
-        print(f"❌ ios-mcp NOT reachable: {e}\n   -> run `iproxy 8090 8090` in another terminal first.")
+        print(f"❌ device control server NOT reachable: {e}\n   -> run `iproxy 8090 8090` in another terminal first.")
         return
 
     print("\n>>> kill Notes first (clean state)")

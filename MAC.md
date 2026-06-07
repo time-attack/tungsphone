@@ -5,7 +5,7 @@ screenshots the screen, sees the buttons, and clicks around until the task is do
 then talks back in his cloned voice. Right-click the orb to switch persona.
 
 **The entire app is one file:** [`sahur-brain/sahur.py`](sahur-brain/sahur.py). No
-jailbreak, no server, no CLI to watch (the orb shows everything), and **nothing shared
+device extension, no server, no CLI to watch (the orb shows everything), and **nothing shared
 with the iPhone project** — it imports zero code from it.
 
 ## How he does it
@@ -37,7 +37,7 @@ It's a **hybrid**, so it stays reliable instead of fumbling the UI:
 │  press → record → Whisper → [screenshot + AX element list] → MiniMax (vision)│
 │        → CGEvent click/type/key + NSWorkspace open → loop → MiniMax TTS reply│
 └──────────────────────────────────────────────────────────────────────────────┘
-  One-time permission (no jailbreak): Accessibility + Microphone for your terminal.
+  One-time permission (no device extension): Accessibility + Microphone for your terminal.
 ```
 
 ## Run it
@@ -69,7 +69,7 @@ one JSON action per step. The same MiniMax account also does the cloned-voice TT
 
 - **Self-contained:** `sahur.py` imports only third-party libs (pyobjc, numpy,
   sounddevice, faster-whisper, httpx) + your persona images/voices. Nothing from
-  `actions.py` / `iosmcp.py` / `deeplinks.py` / etc.
+  `actions.py` / `device.py` / `deeplinks.py` / etc.
 - **Coordinates:** AX element centers and CGEvent clicks are both top-left-origin global
   points, so clicks land where the element is. Single primary display assumed.
 - **Reliability:** native apps expose rich element trees; for web/Electron content the

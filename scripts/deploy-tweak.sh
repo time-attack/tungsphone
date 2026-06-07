@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy-tweak.sh — build PhonePhonePhoneSahur, install the .deb onto the
-# USB-connected jailbroken iPhone over an iproxy SSH tunnel, and respring.
+# USB-connected iPhone over an iproxy SSH tunnel, and respring.
 #
 #   ./scripts/deploy-tweak.sh
 #
@@ -32,7 +32,7 @@ command -v iproxy   >/dev/null || { echo "need iproxy (brew install libimobilede
 [ -d "$THEOS" ]         || { echo "THEOS not found at $THEOS (set THEOS=...)"; exit 1; }
 [ -d "$DEVELOPER_DIR" ] || { echo "Xcode 16.4 not found at $DEVELOPER_DIR (set DEVELOPER_DIR=...)"; exit 1; }
 
-# ---- build (rootless Dopamine; fat arm64 + arm64e) ----
+# ---- build (fat arm64 + arm64e) ----
 echo "==> building tweak with $(basename "$(dirname "$(dirname "$DEVELOPER_DIR")")")…"
 make -C "$TWEAK_DIR" package THEOS_PACKAGE_SCHEME=rootless
 

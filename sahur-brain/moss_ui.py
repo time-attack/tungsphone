@@ -19,7 +19,7 @@ import os
 import re
 import threading
 
-from iosmcp import UIElement
+from device import UIElement
 
 try:
     from moss import DocumentInfo, MossClient, QueryOptions
@@ -280,7 +280,11 @@ def _local_rank(elements: list[UIElement], target: str, top_k: int) -> list[dict
         if not et:
             continue
         overlap = len(tt & et)
-        sub = 1 if target.strip().lower() in label.lower() else 0
+        # Word-boundary match, NOT raw substring: "play" must match the word "play"
+        # but never the "play" buried inside "airplay" (which was scoring the device
+        # picker as the top hit for a play command).
+        tl = target.strip().lower()
+        sub = 1 if tl and re.search(rf"\b{re.escape(tl)}\b", label.lower()) else 0
         score = sub * 2 + overlap
         if score > 0:
             cx, cy = e.center

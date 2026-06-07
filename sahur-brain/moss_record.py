@@ -8,7 +8,7 @@ Moss query — no live indexing needed.
 
     python moss_record.py        # records until you Ctrl-C
 
-Read-only: it never taps anything. Needs ios-mcp (iproxy) + MOSS_PROJECT_ID/KEY in .env.
+Read-only: it never taps anything. Needs device control server (iproxy) + MOSS_PROJECT_ID/KEY in .env.
 """
 
 from __future__ import annotations
@@ -23,16 +23,16 @@ from dotenv import load_dotenv
 load_dotenv(".env")
 
 from actions import Actions
-from iosmcp import IOSMCP
+from device import DeviceClient
 
 
 def main():
-    m = IOSMCP()
+    m = DeviceClient()
     a = Actions(m)
     try:
         m.health()
     except Exception as e:
-        sys.exit(f"ios-mcp unreachable: {e} (run iproxy 8090 8090, start iOS MCP)")
+        sys.exit(f"device control server unreachable: {e} (run iproxy 8090 8090, start device control server)")
     if not a.moss.enabled:
         sys.exit("Moss disabled — set MOSS_PROJECT_ID/MOSS_PROJECT_KEY in .env")
 

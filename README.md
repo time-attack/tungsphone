@@ -1,6 +1,6 @@
 # PhonePhonePhoneSahur 🪵
 
-**Tung Tung Tung Sahur** lives on your jailbroken iPhone's SpringBoard. Tap him, talk,
+**Tung Tung Tung Sahur** lives on your iPhone's SpringBoard. Tap him, talk,
 and he actually does it — opens apps, taps through UI, deep-links — then talks back in
 his own cloned voice.
 
@@ -10,7 +10,7 @@ his own cloned voice.
 Built for the Conversational AI Hackathon (YC, June 2026). Sponsor stack: **LiveKit**
 (realtime voice), **MiniMax** (brain LLM + cloned voice), Deepgram (STT).
 
-> 🖥️ **On a Mac?** There's a no-jailbreak desktop port — same brain, same agentic
+> 🖥️ **On a Mac?** There's a desktop port — same brain, same agentic
 > "index the UI + semantic tap" loop, same floating buddy — in **one Python process,
 > no server, no Swift**. It controls the Mac directly through the Accessibility API.
 > Quickstart: **`./scripts/run-mac.sh`** (grant Accessibility once). See [MAC.md](MAC.md).
@@ -30,18 +30,19 @@ Built for the Conversational AI Hackathon (YC, June 2026). Sponsor stack: **Live
           │ Darwin notify       └───────────┬──────────────┘
           │ (toggle / state)                │ HTTP tool calls (LAN)
    ┌──────▼─────────────────┐    ┌──────────▼──────────────┐
-   │ PhonePhonePhoneSahur   │    │ ios-mcp  (on phone)     │
+   │ PhonePhonePhoneSahur   │    │ device server (on phone)│
    │ SpringBoard tweak      │    │  :8090/mcp  open_url,   │
    │ floating Sahur overlay │    │  tap, get_ui_elements…  │
    └────────────────────────┘    └─────────────────────────┘
 ```
 
-- **`ios-mcp`** (3rd-party, we install): the phone's "hands & eyes" — an HTTP control
-  server (`tap`, `screenshot`, `get_ui_elements`, `open_url`, `launch_app`…). Runs on
-  Dopamine rootless. https://github.com/witchan/ios-mcp
+- **device control server** (separate on-device component): the phone's "hands & eyes" — an
+  HTTP control server (`tap`, `screenshot`, `get_ui_elements`, `open_url`, `launch_app`…) that
+  runs on the device and exposes `:8090`. **It is not part of this repo** — bring your own
+  on-device control server. The only piece here is our thin Python client: **`sahur-brain/device.py`**.
 - **`sahur-brain/`** (Python, laptop): the brain + voice. LiveKit agent that listens,
   reasons with MiniMax + tools, and speaks in Sahur's cloned voice. Tools drive the phone
-  via ios-mcp.
+  via the device control server.
 - **`SahurKit/`** (Swift app, phone): joins the LiveKit room — mic in, voice out, runs in
   the background. Bridges the SpringBoard overlay to the voice session via Darwin notifications.
 - **`PhonePhonePhoneSahur/`** (Theos tweak, phone): the floating animated Sahur on the
@@ -59,25 +60,12 @@ into single tool calls, which makes the weaker LLM far more reliable.
 
 ---
 
-## Prerequisites
-
-- iPhone jailbroken with **Dopamine** (rootless, iOS 15–16.x). Confirm with: Settings → General → About.
-- Laptop: **Python 3.10+**, and **Theos** + **XcodeGen** + Xcode for the on-device pieces.
-- Accounts/keys: **MiniMax** (LLM + voice clone), **Deepgram** (STT), **LiveKit Cloud**.
-- Phone + laptop on the **same wifi** (or USB + `iproxy`).
-
----
-
 ## Setup
 
-### 0. Install ios-mcp on the phone (the control layer)
-Add the repo's release in Sileo, or build it (`witchan/ios-mcp`):
-```bash
-git clone https://github.com/witchan/ios-mcp && cd ios-mcp
-make package THEOS_PACKAGE_SCHEME=rootless
-# install the .deb from ./packages via Sileo/dpkg, then respring
-```
-In Settings → **iOS MCP**, start the server. Verify from the laptop:
+### 0. On-device control server (the control layer)
+Install an on-device HTTP control server that exposes `tap`, `screenshot`, `get_ui_elements`,
+`open_url`, and `launch_app` over `:8090` on the device. This component is separate
+from this repo and is not included here. Once it's running, verify from the laptop:
 ```bash
 curl http://<phone-ip>:8090/health      # -> {"status":"ok",...}
 ```
@@ -87,7 +75,7 @@ curl http://<phone-ip>:8090/health      # -> {"status":"ok",...}
 cd sahur-brain
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # fill in keys + IOSMCP_BASE_URL=http://<phone-ip>:8090
+cp .env.example .env        # fill in keys + DEVICE_BASE_URL=http://<phone-ip>:8090
 ```
 
 **Clone Sahur's voice** (grab a ~15s clean clip of the character first):
@@ -146,11 +134,11 @@ make install THEOS_PACKAGE_SCHEME=rootless THEOS_DEVICE_IP=<phone-ip>
 `com.apple.Maps` · `com.apple.MobileSMS` (Messages) · `com.apple.mobilesafari` · `com.apple.springboard`
 
 ## Troubleshooting
-- **`control_proof` can't reach phone** → check `IOSMCP_BASE_URL` and that iOS MCP server is started.
+- **`control_proof` can't reach phone** → check `DEVICE_BASE_URL` and that the device control server is started.
 - **MiniMax tool calls misbehave** → try `MINIMAX_MODEL=abab6.5s-chat`; or test the loop with an
   OpenAI key by pointing `MINIMAX_BASE_URL`/key at OpenAI temporarily.
-- **Overlay doesn't appear** → `killall -9 SpringBoard`; confirm the tweak installed under the
-  rootless prefix; check the filter targets `com.apple.springboard`.
+- **Overlay doesn't appear** → `killall -9 SpringBoard`; confirm the tweak installed; check the
+  filter targets `com.apple.springboard`.
 - **No captions in the bubble** → captions are best-effort (file write may be sandboxed); the
   state animations + phrases still work. Live transcript needs SahurKit's file write to succeed.
 - **Agent state not animating** → SahurKit maps LiveKit's `lk.agent.state`; verify the agent

@@ -1,7 +1,7 @@
 """
 sahur_voice.py — voice front-end for the proven control_proof brain.
 
-talk  ->  local Whisper (STT, no API/key)  ->  MiniMax brain + Moss + ios-mcp
+talk  ->  local Whisper (STT, no API/key)  ->  MiniMax brain + Moss + device control server
       ->  phone acts (Sahur walks to each tap)  ->  MiniMax TTS reply (his voice)
 
 Why local Whisper: MiniMax has no STT endpoint (verified — all ASR paths 404).
@@ -33,9 +33,10 @@ import actions as A
 from actions import Actions
 import threading
 
+import conversation
 from flavor import flavor_line, closing_line
 from intents import route as fast_route
-from iosmcp import IOSMCP
+from device import DeviceClient
 from music import Music
 from persona import get_persona, system_prompt
 import orchestrator
@@ -230,7 +231,7 @@ def read_active_persona(mcp) -> str:
                 out = f.read()
         else:
             out = mcp.run_command(f"cat {_PERSONA_FILE} 2>/dev/null")
-            if isinstance(out, dict):             # ios-mcp returns {'exitcode','output'}
+            if isinstance(out, dict):             # device control server returns {'exitcode','output'}
                 out = out.get("output", "")
         name = str(out or "").strip().lower()
         # keep only the persona token (guard against stray output)
@@ -241,14 +242,14 @@ def read_active_persona(mcp) -> str:
 
 
 def main():
-    mcp = IOSMCP()
+    mcp = DeviceClient()
     try:
         mcp.health()
     except Exception as e:
         if _IS_MAC:
             sys.exit(f"SahurMac control server unreachable: {e}\n"
                      f"Start it first:  cd SahurMac && swift run  (grant Accessibility, then relaunch).")
-        sys.exit(f"ios-mcp unreachable: {e}\nRun: iproxy 8090 8090, and start the iOS MCP server.")
+        sys.exit(f"device control server unreachable: {e}\nRun: iproxy 8090 8090, and start the device control server server.")
     key = os.environ.get("MINIMAX_API_KEY")
     if not key:
         sys.exit("MINIMAX_API_KEY missing.")
@@ -284,6 +285,10 @@ def main():
                     r = acts.do_sequence(steps, app=app)
                     result["log"] = r.splitlines()[0][:120]
                     result["reply"] = f"{core}, {pcfg['catchphrase']}"
+                    # Record even the fast path so the running transcript stays complete —
+                    # a follow-up ("now do X there") still sees this turn happened. The
+                    # planner path records itself inside run_goal.
+                    conversation.record(text, core)
                 else:
                     # everything else goes through the PLANNER brain: decompose into
                     # verifiable sub-goals, run each as a focused sub-agent, pass

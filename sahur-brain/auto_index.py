@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 load_dotenv(".env")
 
 from actions import Actions, _is_interactive
-from iosmcp import IOSMCP
+from device import DeviceClient
 
 # ---- safety -----------------------------------------------------------------
 
@@ -280,11 +280,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="plan + index but never tap")
     args = ap.parse_args()
 
-    m = IOSMCP()
+    m = DeviceClient()
     try:
         m.health()
     except Exception as e:
-        sys.exit(f"ios-mcp unreachable: {e} (run iproxy 8090 8090)")
+        sys.exit(f"device control server unreachable: {e} (run iproxy 8090 8090)")
     a = Actions(m)
     if not a.moss.enabled:
         sys.exit("Moss disabled — set MOSS_PROJECT_ID/MOSS_PROJECT_KEY in .env")

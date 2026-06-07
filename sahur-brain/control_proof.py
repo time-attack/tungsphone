@@ -1,14 +1,14 @@
 """
 control_proof.py — Phase 1: prove brain -> hands with no voice/UI.
 
-Runs the MiniMax LLM with tool-calling against the live phone (via ios-mcp). Type
+Runs the MiniMax LLM with tool-calling against the live phone (via device control server). Type
 a command, watch the phone do it.
 
     python control_proof.py "open spotify and play my rock playlist"
     python control_proof.py            # interactive REPL
 
 Env (see .env.example):
-    IOSMCP_BASE_URL   http://<phone-ip>:8090
+    DEVICE_BASE_URL   http://<phone-ip>:8090
     MINIMAX_API_KEY   your MiniMax key
     MINIMAX_BASE_URL  https://api.minimax.io/v1   (OpenAI-compatible)
     MINIMAX_MODEL     MiniMax-Text-01
@@ -26,7 +26,7 @@ from openai import OpenAI
 
 import actions as A
 from actions import Actions
-from iosmcp import IOSMCP
+from device import DeviceClient
 from persona import INSTRUCTIONS, PERSONA
 
 load_dotenv()
@@ -129,12 +129,12 @@ def run_once(client: OpenAI, model: str, acts: Actions, command: str, system: st
 
 def main():
     client, model = build_client()
-    mcp = IOSMCP()
+    mcp = DeviceClient()
     try:
         health = mcp.health()
-        print(f"ios-mcp ok: {health}  | model: {model}")
+        print(f"device control server ok: {health}  | model: {model}")
     except Exception as e:
-        sys.exit(f"Can't reach ios-mcp at {mcp.base_url}: {e}\nIs the phone on and IOSMCP_BASE_URL correct?")
+        sys.exit(f"Can't reach device control server at {mcp.base_url}: {e}\nIs the phone on and DEVICE_BASE_URL correct?")
 
     acts = Actions(mcp)
     if len(sys.argv) > 1:

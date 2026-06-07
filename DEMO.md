@@ -15,7 +15,7 @@ Trump. The room loses it.
 
 - [ ] App already running, orb/sprite on screen. **Don't boot it live.**
 - [ ] Mac: `cd sahur-brain && ./scripts/run-mac.sh` → orb visible, draggable.
-- [ ] Phone: SahurKit running, ios-mcp server started, `curl http://<phone-ip>:8090/health` → ok.
+- [ ] Phone: SahurKit running, device control server server started, `curl http://<phone-ip>:8090/health` → ok.
 - [ ] Spotify (or Music) **logged in**, a playlist ready. Safari open to a blank tab.
 - [ ] System volume up — the **theme music loops out of the laptop** while he works.
       That's the audio energy; don't mute it.
@@ -135,7 +135,7 @@ Hands up. Done. Don't keep talking after the laugh.
 - **Hard fail:** flip persona and re-run a *different, simpler* command (open Notes). Movement
   + a new voice resets the room's attention. Never show a terminal.
 - **Total wifi death (phone):** switch the mirror to the **Mac** orb and run `./scripts/run-mac.sh`
-  flow instead. Same demo, no jailbreak, one process. Have it pre-warmed as your safety net.
+  flow instead. Same demo, no device extension, one process. Have it pre-warmed as your safety net.
 
 ---
 
