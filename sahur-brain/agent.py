@@ -428,9 +428,9 @@ async def entrypoint(ctx: agents.JobContext):
     mcp = IOSMCP()
     try:
         await asyncio.to_thread(mcp.health)
-        print("📲 device control server connected")
+        print("📲 ios-mcp connected")
     except Exception as e:
-        print(f"⚠️  device control server not reachable ({e}) — voice works, phone actions won't until `iproxy 8090 8090`.")
+        print(f"⚠️  ios-mcp not reachable ({e}) — voice works, phone actions won't until `iproxy 8090 8090`.")
     acts = Actions(mcp)
     brain, brain_model = build_brain()        # smart planner/orchestrator brain
 
