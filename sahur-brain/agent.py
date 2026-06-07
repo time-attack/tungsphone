@@ -278,26 +278,15 @@ def _env_or_zshrc(*names: str) -> str:
 def build_brain() -> tuple[OpenAI, str]:
     """The PLANNER/ORCHESTRATOR brain — use a SMART model (this is what plans steps + grounds).
     Priority:
-      1) Qwen via Alibaba Cloud (DASHSCOPE_API_KEY / QWEN_API_KEY in env, or read from
-         ~/.zshrc) -> qwen-max-latest, via the DashScope OpenAI-compatible endpoint
-      2) Claude (ANTHROPIC_API_KEY) -> claude-sonnet-4-6  [legacy fallback]
-      3) a smart model via LiveKit Inference — your EXISTING LiveKit creds, NO new key
-      4) MiniMax fallback.
-    Override the model with SAHUR_BRAIN_MODEL and the endpoint with DASHSCOPE_BASE_URL.
+      1) Claude (ANTHROPIC_API_KEY) -> claude-sonnet-4-6
+      2) a smart model via LiveKit Inference — your EXISTING LiveKit creds, NO new key
+      3) MiniMax fallback.
+    Override the model with SAHUR_BRAIN_MODEL.
     (TTS stays MiniMax cloned voices; STT stays LiveKit.)"""
-    qk = _env_or_zshrc("DASHSCOPE_API_KEY", "QWEN_API_KEY", "ALIBABA_API_KEY")
-    if qk:
-        model = os.environ.get("SAHUR_BRAIN_MODEL", "qwen-max-latest")
-        # International Model Studio endpoint; set DASHSCOPE_BASE_URL to the China
-        # endpoint (https://dashscope.aliyuncs.com/compatible-mode/v1) if needed.
-        base = os.environ.get("DASHSCOPE_BASE_URL",
-                              "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        print(f"🧠 brain: {model} (Alibaba Cloud / Qwen)")
-        return OpenAI(api_key=qk, base_url=base), model
     ak = _env_or_zshrc("ANTHROPIC_API_KEY")
     if ak:
         model = os.environ.get("SAHUR_BRAIN_MODEL", "claude-sonnet-4-6")
-        print(f"🧠 brain: {model} (Anthropic / Claude — legacy fallback)")
+        print(f"🧠 brain: {model} (Anthropic / Claude)")
         return OpenAI(api_key=ak, base_url="https://api.anthropic.com/v1/"), model
     try:
         from livekit.agents.inference._utils import create_access_token, get_default_inference_url
