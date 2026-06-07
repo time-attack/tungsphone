@@ -1,0 +1,470 @@
+// PhonePhonePhoneSahur — animated Tung Tung Tung Sahur overlay on SpringBoard.
+//
+// SAFETY (hard-won):
+//   * arm64 ONLY (arm64e PAC-faulted SpringBoard at load — see Makefile).
+//   * Small movable window — can never black out the screen.
+//   * EVERY entry point wrapped in SAHUR_SAFE (no exception reaches SpringBoard).
+//   * Boot does NO UIKit work. The window is built only on a NEW control command
+//     (nonce protocol) — a value left over from a previous boot is ignored, so a
+//     buggy overlay can fail once and SpringBoard boots clean: NO bootloop, ever.
+//
+// Visuals: 64x64 pixel-art GIFs (idle/walk/attack), nearest-neighbor scaled.
+// Audio: present.mp3 loops while Sahur is on screen.
+//
+// Channels (files under /var/mobile/Library/Caches, world-writable by mobile):
+//   show control -> sahur_show.txt  : "<1|0> <nonce>"  (act only when nonce changes)
+//   tap targets  -> sahur_tap.txt   : "x y seq"        (walk there + poke)
+//   voice state  -> Darwin "com.sahur.state.idle|listening|thinking|speaking"
+//   tap-to-talk  -> tap sprite when idle -> Darwin "com.sahur.toggle"
+
+#import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
+#import <AVFoundation/AVFoundation.h>
+#import <ImageIO/ImageIO.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+#import <notify.h>
+
+#define TOGGLE_NOTIFY "com.sahur.toggle"
+#define TAP_FILE  @"/var/mobile/Library/Caches/sahur_tap.txt"
+#define SHOW_FILE @"/var/mobile/Library/Caches/sahur_show.txt"
+#define DBG_FILE  @"/var/mobile/Library/Caches/sahur_dbg.txt"
+
+#define SAHUR_SAFE(...) do { @try { __VA_ARGS__ } @catch (NSException *e) { \
+    NSLog(@"[Sahur] caught: %@ %@", e.name, e.reason); } } while (0)
+
+static const CGFloat kWinW = 220, kWinH = 180, kCharSize = 96;
+static const BOOL kAutoShow = NO;
+
+typedef NS_ENUM(NSInteger, SahurState) {
+    SahurStateIdle = 0, SahurStateListening, SahurStateThinking, SahurStateSpeaking,
+};
+
+static BOOL gAutomating = NO;
+
+// ---- asset helpers ---------------------------------------------------------
+
+static NSString *AssetPath(NSString *name) {
+    for (NSString *base in @[@"/var/jb/Library/Application Support/PhonePhonePhoneSahur/",
+                             @"/Library/Application Support/PhonePhonePhoneSahur/"]) {
+        NSString *p = [base stringByAppendingString:name];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) return p;
+    }
+    return nil;
+}
+
+static NSArray<UIImage *> *LoadGIF(NSString *name, NSTimeInterval *outDur) {
+    NSString *path = AssetPath(name);
+    if (!path) return nil;
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return nil;
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!src) return nil;
+    size_t n = CGImageSourceGetCount(src);
+    NSMutableArray *frames = [NSMutableArray array];
+    NSTimeInterval total = 0;
+    for (size_t i = 0; i < n; i++) {
+        CGImageRef cg = CGImageSourceCreateImageAtIndex(src, i, NULL);
+        if (cg) { [frames addObject:[UIImage imageWithCGImage:cg scale:1 orientation:UIImageOrientationUp]]; CGImageRelease(cg); }
+        NSTimeInterval d = 0.1;
+        CFDictionaryRef props = CGImageSourceCopyPropertiesAtIndex(src, i, NULL);
+        if (props) {
+            NSDictionary *p = (__bridge NSDictionary *)props;
+            NSDictionary *gif = p[(__bridge NSString *)kCGImagePropertyGIFDictionary];
+            NSNumber *ut = gif[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime];
+            NSNumber *dt = gif[(__bridge NSString *)kCGImagePropertyGIFDelayTime];
+            if (ut && ut.doubleValue > 0) d = ut.doubleValue;
+            else if (dt && dt.doubleValue > 0) d = dt.doubleValue;
+            CFRelease(props);
+        }
+        total += d;
+    }
+    CFRelease(src);
+    if (outDur) *outDur = (total > 0) ? total : (n * 0.1);
+    return frames.count ? frames : nil;
+}
+
+// ---- pass-through window ----------------------------------------------------
+
+@interface SahurWindow : UIWindow
+@end
+@implementation SahurWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (gAutomating) return nil;
+    UIView *hit = nil;
+    @try { hit = [super hitTest:point withEvent:event]; } @catch (__unused NSException *e) { return nil; }
+    return (hit == self) ? nil : hit;
+}
+@end
+
+// ---- controller ------------------------------------------------------------
+
+@interface SahurController : NSObject
+@property (nonatomic, strong) SahurWindow *window;
+@property (nonatomic, strong) UIImageView *character;
+@property (nonatomic, strong) UIView *bubble;
+@property (nonatomic, strong) UILabel *bubbleLabel;
+@property (nonatomic, strong) AVAudioPlayer *audio;
+@property (nonatomic, strong) NSTimer *pollTimer;
+@property (nonatomic, strong) NSTimer *returnTimer;
+@property (nonatomic, strong) NSTimer *controlTimer;
+@property (nonatomic, copy)   NSString *lastTap;
+@property (nonatomic, copy)   NSString *lastShowNonce;
+@property (nonatomic, assign) CGPoint idleOrigin;
+@property (nonatomic, assign) NSInteger installTries;
+@property (nonatomic, assign) BOOL registered;
+@property (nonatomic, assign) CGFloat facing;
+// cached animations
+@property (nonatomic, strong) NSArray<UIImage *> *idleFrames;
+@property (nonatomic, strong) NSArray<UIImage *> *walkFrames;
+@property (nonatomic, strong) NSArray<UIImage *> *attackFrames;
+@property (nonatomic, assign) NSTimeInterval idleDur, walkDur, attackDur;
++ (instancetype)shared;
+- (void)bootRegister;
+- (void)scheduleInstall;
+- (void)show;
+- (void)hide;
+@end
+
+static void sahur_ctrl_cb(CFNotificationCenterRef c, void *o, CFStringRef name,
+                          const void *obj, CFDictionaryRef ui);
+
+@implementation SahurController
+
++ (instancetype)shared {
+    static SahurController *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [SahurController new]; });
+    return s;
+}
+
+- (void)dbg:(NSString *)s {
+    SAHUR_SAFE({ [s writeToFile:DBG_FILE atomically:YES encoding:NSUTF8StringEncoding error:nil]; });
+}
+
+// SAFE: observers + a tiny file poll. No UIKit at boot.
+- (void)bootRegister {
+    if (self.registered) return;
+    self.registered = YES;
+    self.facing = 1.0;
+    CFNotificationCenterRef c = CFNotificationCenterGetDarwinNotifyCenter();
+    const char *names[] = {"com.sahur.state.idle", "com.sahur.state.listening",
+                           "com.sahur.state.thinking", "com.sahur.state.speaking"};
+    for (int i = 0; i < 4; i++)
+        CFNotificationCenterAddObserver(c, (__bridge const void *)self, sahur_ctrl_cb,
+            (__bridge CFStringRef)[NSString stringWithUTF8String:names[i]], NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+    // Seed the nonce from whatever is already in the file so a value left over
+    // from a previous boot is treated as already-handled (no auto-show => no loop).
+    self.lastShowNonce = [self showNonce];
+    self.controlTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 target:self
+        selector:@selector(checkControl) userInfo:nil repeats:YES];
+    [self dbg:@"boot-registered"];
+}
+
+- (NSString *)showNonce {
+    NSString *s = [NSString stringWithContentsOfFile:SHOW_FILE encoding:NSUTF8StringEncoding error:nil];
+    return s ?: @"";
+}
+
+- (void)checkControl {
+    SAHUR_SAFE({
+        NSString *cur = [self showNonce];
+        if ([cur isEqualToString:self.lastShowNonce]) return;   // only act on a NEW command
+        self.lastShowNonce = cur;
+        NSString *t = [cur stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([t hasPrefix:@"1"]) [self show];
+        else if ([t hasPrefix:@"0"]) [self hide];
+    });
+}
+
+- (void)show { SAHUR_SAFE({ self.installTries = 0; [self scheduleInstall]; }); }
+
+- (void)hide {
+    SAHUR_SAFE({
+        [self.pollTimer invalidate]; self.pollTimer = nil;
+        [self.returnTimer invalidate]; self.returnTimer = nil;
+        [self.audio stop]; self.audio = nil;
+        gAutomating = NO;
+        self.window.hidden = YES; self.window = nil; self.character = nil;
+    });
+}
+
+- (UIWindowScene *)anyWindowScene {
+    UIWindowScene *fallback = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            if (sc.activationState == UISceneActivationStateForegroundActive) return (UIWindowScene *)sc;
+            if (!fallback) fallback = (UIWindowScene *)sc;
+        }
+    }
+    return fallback;
+}
+
+- (void)scheduleInstall {
+    if (self.window || self.installTries > 20) return;
+    self.installTries++;
+    SAHUR_SAFE({ [self install]; });
+    if (!self.window)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self scheduleInstall]; });
+}
+
+- (void)install {
+    if (self.window) return;
+    SAHUR_SAFE({
+        CGRect screen = [UIScreen mainScreen].bounds;
+        self.idleOrigin = CGPointMake(screen.size.width - kWinW + 30, screen.size.height - kWinH - 80);
+        UIWindowScene *scene = [self anyWindowScene];
+        [self dbg:[NSString stringWithFormat:@"install-start scene=%@", scene ? @"yes" : @"nil"]];
+
+        SahurWindow *win = scene ? [[SahurWindow alloc] initWithWindowScene:scene]
+                                 : [[SahurWindow alloc] initWithFrame:screen];
+        win.frame = CGRectMake(self.idleOrigin.x, self.idleOrigin.y, kWinW, kWinH);
+        win.windowLevel = UIWindowLevelAlert + 1000;
+        win.backgroundColor = [UIColor clearColor];
+        win.userInteractionEnabled = YES;
+
+        UIViewController *vc = [UIViewController new];
+        vc.view.backgroundColor = [UIColor clearColor];
+        win.rootViewController = vc;
+        UIView *root = vc.view;
+
+        // load animations (cached)
+        if (!self.idleFrames) self.idleFrames = LoadGIF(@"idle.gif", &_idleDur);
+        if (!self.walkFrames) self.walkFrames = LoadGIF(@"walk.gif", &_walkDur);
+        if (!self.attackFrames) self.attackFrames = LoadGIF(@"attack.gif", &_attackDur);
+
+        CGRect cframe = CGRectMake((kWinW - kCharSize) / 2, kWinH - kCharSize, kCharSize, kCharSize);
+        UIImageView *iv = [[UIImageView alloc] initWithFrame:cframe];
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        iv.userInteractionEnabled = YES;
+        iv.layer.magnificationFilter = kCAFilterNearest;   // crisp pixel art
+        iv.layer.shadowColor = [UIColor blackColor].CGColor;
+        iv.layer.shadowOpacity = 0.4; iv.layer.shadowRadius = 8; iv.layer.shadowOffset = CGSizeMake(0, 4);
+        if (!self.idleFrames) {   // fallback to static png / glyph
+            iv.image = [UIImage imageWithContentsOfFile:AssetPath(@"sahur.png") ?: @""];
+            if (!iv.image) {
+                UILabel *g = [[UILabel alloc] initWithFrame:iv.bounds];
+                g.text = @"🪵"; g.font = [UIFont systemFontOfSize:54]; g.textAlignment = NSTextAlignmentCenter;
+                [iv addSubview:g];
+            }
+        }
+        [root addSubview:iv];
+
+        UIView *bubble = [[UIView alloc] initWithFrame:CGRectMake(8, 4, kWinW - 16, 44)];
+        bubble.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.92];
+        bubble.layer.cornerRadius = 14; bubble.layer.borderWidth = 2;
+        bubble.layer.borderColor = [UIColor colorWithRed:1 green:0.78 blue:0.2 alpha:1].CGColor;
+        bubble.userInteractionEnabled = NO; bubble.alpha = 0;
+        UILabel *bl = [[UILabel alloc] initWithFrame:CGRectInset(bubble.bounds, 10, 4)];
+        bl.numberOfLines = 2; bl.textColor = [UIColor whiteColor]; bl.textAlignment = NSTextAlignmentCenter;
+        bl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        [bubble addSubview:bl]; [root addSubview:bubble];
+
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onTap:)];
+        [iv addGestureRecognizer:tap];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
+        [iv addGestureRecognizer:pan];
+
+        win.hidden = NO;
+        self.window = win; self.character = iv; self.bubble = bubble; self.bubbleLabel = bl;
+
+        [self playIdle];
+        [self startAudio];
+
+        self.lastTap = [self readTapFile];
+        self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:0.06 target:self
+            selector:@selector(pollTaps) userInfo:nil repeats:YES];
+        [self dbg:@"install-done window-visible"];
+    });
+}
+
+// ---- audio -------------------------------------------------------------
+
+- (void)startAudio {
+    SAHUR_SAFE({
+        NSString *p = AssetPath(@"present.mp3");
+        if (!p) return;
+        NSError *e = nil;
+        AVAudioSession *s = [AVAudioSession sharedInstance];
+        [s setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+        [s setActive:YES error:nil];
+        self.audio = [[AVAudioPlayer alloc] initWithContentsOfURL:[NSURL fileURLWithPath:p] error:&e];
+        self.audio.numberOfLoops = -1;   // loop forever while present
+        [self.audio prepareToPlay];
+        [self.audio play];
+    });
+}
+
+// ---- animation helpers -------------------------------------------------
+
+- (void)playFrames:(NSArray *)frames dur:(NSTimeInterval)d repeat:(NSInteger)rep {
+    if (!frames.count || !self.character) return;
+    self.character.animationImages = frames;
+    self.character.animationDuration = (d > 0) ? d : 0.5;
+    self.character.animationRepeatCount = rep;   // 0 = infinite
+    [self.character startAnimating];
+}
+
+- (void)playIdle { [self playFrames:self.idleFrames dur:self.idleDur repeat:0]; }
+- (void)playWalk { [self playFrames:self.walkFrames dur:self.walkDur repeat:0]; }
+
+- (void)faceDir:(CGFloat)dir {
+    self.facing = dir;
+    self.character.transform = CGAffineTransformMakeScale(dir, 1.0);
+}
+
+// ---- tap-target channel ------------------------------------------------
+
+- (NSString *)readTapFile {
+    NSString *s = nil;
+    SAHUR_SAFE({ s = [NSString stringWithContentsOfFile:TAP_FILE encoding:NSUTF8StringEncoding error:nil]; });
+    return s ?: @"";
+}
+
+- (void)pollTaps {
+    SAHUR_SAFE({
+        NSString *cur = [self readTapFile];
+        if (cur.length == 0 || [cur isEqualToString:self.lastTap]) return;
+        self.lastTap = cur;
+        NSMutableArray *nums = [NSMutableArray array];
+        for (NSString *p in [cur componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]])
+            if (p.length) [nums addObject:p];
+        if (nums.count < 2) return;
+        CGFloat x = [nums[0] floatValue], y = [nums[1] floatValue];
+        if (x <= 0 && y <= 0) return;
+        [self walkToX:x y:y];
+    });
+}
+
+- (CGPoint)windowOriginForTargetX:(CGFloat)x y:(CGFloat)y {
+    return CGPointMake(x - kWinW / 2.0, y - (kWinH - kCharSize / 2.0));
+}
+
+// ---- walking + poke ----------------------------------------------------
+
+- (void)walkToX:(CGFloat)x y:(CGFloat)y {
+    SAHUR_SAFE({
+        [self.returnTimer invalidate]; self.returnTimer = nil;
+        gAutomating = YES;
+        [self showBubble:@"tung tung tung…"];
+        CGPoint from = self.window.frame.origin;
+        CGPoint to = [self windowOriginForTargetX:x y:y];
+        CGFloat dist = hypot(to.x - from.x, to.y - from.y);
+        NSTimeInterval dur = MIN(0.7, MAX(0.25, dist / 900.0));
+        [self faceDir:(to.x >= from.x) ? 1.0 : -1.0];
+        [self playWalk];
+        [UIView animateWithDuration:dur delay:0 options:UIViewAnimationOptionCurveEaseInOut
+            animations:^{ CGRect f = self.window.frame; f.origin = to; self.window.frame = f; }
+            completion:^(BOOL fin) { SAHUR_SAFE({ [self poke:CGPointMake(x, y)]; }); }];
+    });
+}
+
+- (void)poke:(CGPoint)target {
+    [self showBubble:@"tap! 🪵"];
+    if (self.attackFrames.count) {
+        [self playFrames:self.attackFrames dur:self.attackDur repeat:1];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((self.attackDur ?: 0.4) * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ SAHUR_SAFE({ [self playIdle]; [self faceDir:self.facing]; }); });
+    }
+    [self rippleAt:CGPointMake(kWinW / 2.0, kWinH - kCharSize / 2.0)];
+    self.returnTimer = [NSTimer scheduledTimerWithTimeInterval:2.5 target:self
+        selector:@selector(returnToIdle) userInfo:nil repeats:NO];
+}
+
+- (void)rippleAt:(CGPoint)p {
+    CAShapeLayer *ring = [CAShapeLayer layer];
+    CGFloat r = 22;
+    ring.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-r, -r, 2*r, 2*r)].CGPath;
+    ring.position = p;
+    ring.fillColor = [UIColor colorWithRed:1 green:0.78 blue:0.2 alpha:0.30].CGColor;
+    ring.strokeColor = [UIColor colorWithRed:1 green:0.78 blue:0.2 alpha:1].CGColor;
+    ring.lineWidth = 3;
+    [self.window.rootViewController.view.layer addSublayer:ring];
+    CABasicAnimation *scale = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+    scale.fromValue = @0.2; scale.toValue = @1.6;
+    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue = @1.0; fade.toValue = @0.0;
+    CAAnimationGroup *g = [CAAnimationGroup animation];
+    g.animations = @[scale, fade]; g.duration = 0.5;
+    g.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+    [ring addAnimation:g forKey:@"ripple"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5*NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [ring removeFromSuperlayer]; });
+}
+
+- (void)returnToIdle {
+    SAHUR_SAFE({
+        [self showBubble:nil];
+        CGPoint from = self.window.frame.origin;
+        [self faceDir:(self.idleOrigin.x >= from.x) ? 1.0 : -1.0];
+        [self playWalk];
+        [UIView animateWithDuration:0.5 delay:0 options:UIViewAnimationOptionCurveEaseInOut
+            animations:^{ CGRect f = self.window.frame; f.origin = self.idleOrigin; self.window.frame = f; }
+            completion:^(BOOL fin){ gAutomating = NO; SAHUR_SAFE({ [self playIdle]; }); }];
+    });
+}
+
+// ---- gestures ----------------------------------------------------------
+
+- (void)onTap:(UITapGestureRecognizer *)g {
+    SAHUR_SAFE({
+        [UIView animateWithDuration:0.08 animations:^{ self.character.transform = CGAffineTransformScale(CGAffineTransformMakeScale(self.facing,1), 0.85, 0.85); }
+            completion:^(BOOL f){ [self faceDir:self.facing]; }];
+        notify_post(TOGGLE_NOTIFY);
+    });
+}
+
+- (void)onPan:(UIPanGestureRecognizer *)g {
+    SAHUR_SAFE({
+        CGPoint t = [g translationInView:self.window];
+        CGRect f = self.window.frame; f.origin.x += t.x; f.origin.y += t.y; self.window.frame = f;
+        [g setTranslation:CGPointZero inView:self.window];
+        if (g.state == UIGestureRecognizerStateEnded) self.idleOrigin = f.origin;
+    });
+}
+
+- (void)showBubble:(NSString *)text {
+    if (!text.length) { [UIView animateWithDuration:0.2 animations:^{ self.bubble.alpha = 0; }]; return; }
+    self.bubbleLabel.text = text;
+    [UIView animateWithDuration:0.2 animations:^{ self.bubble.alpha = 1; }];
+}
+
+- (void)setVoiceState:(SahurState)state {
+    NSString *say = nil;
+    switch (state) {
+        case SahurStateListening: say = @"listening…"; break;
+        case SahurStateThinking:  say = @"tung tung tung…"; break;
+        case SahurStateSpeaking:  say = @"SAHUR! 🪵"; break;
+        default: say = nil; break;
+    }
+    [self showBubble:say];
+}
+
+@end
+
+static void sahur_ctrl_cb(CFNotificationCenterRef center, void *observer, CFStringRef name,
+                          const void *object, CFDictionaryRef userInfo) {
+    NSString *n = (__bridge NSString *)name;
+    SahurController *c = [SahurController shared];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SAHUR_SAFE({
+            if ([n hasSuffix:@"listening"]) [c setVoiceState:SahurStateListening];
+            else if ([n hasSuffix:@"thinking"]) [c setVoiceState:SahurStateThinking];
+            else if ([n hasSuffix:@"speaking"]) [c setVoiceState:SahurStateSpeaking];
+            else [c setVoiceState:SahurStateIdle];
+        });
+    });
+}
+
+%hook SpringBoard
+- (void)applicationDidFinishLaunching:(id)application {
+    %orig;
+    SAHUR_SAFE({
+        [[SahurController shared] bootRegister];
+        if (kAutoShow)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [[SahurController shared] scheduleInstall]; });
+    });
+}
+%end

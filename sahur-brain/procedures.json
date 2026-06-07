@@ -1,0 +1,26 @@
+[
+  {
+    "name": "copy_tiktok_link",
+    "app": "TikTok",
+    "on_current": true,
+    "triggers": [
+      "copy the link",
+      "copy link",
+      "copy this link",
+      "copy the tiktok link",
+      "copy this tiktok",
+      "copy the video link",
+      "copy video link",
+      "grab the link",
+      "get the link",
+      "share the link",
+      "copy that link",
+      "save the link"
+    ],
+    "steps": [
+      "share",
+      "copy link"
+    ],
+    "reply": "link copied"
+  }
+]

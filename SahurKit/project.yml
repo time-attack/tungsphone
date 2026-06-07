@@ -1,0 +1,33 @@
+# XcodeGen spec. Generate the project with:  xcodegen generate
+# Then open SahurKit.xcodeproj, set your team/signing, build to the device.
+name: SahurKit
+options:
+  bundleIdPrefix: com.matianlaw
+  deploymentTarget:
+    iOS: "15.0"
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift.git
+    from: "2.0.0"
+targets:
+  SahurKit:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: SahurKit
+        UIBackgroundModes: [audio, voip]
+        NSMicrophoneUsageDescription: "Sahur needs the mic to hear your commands."
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    dependencies:
+      - package: LiveKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.matianlaw.sahurkit
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"

@@ -1,0 +1,30 @@
+# python
+sahur-brain/.venv/
+sahur-brain/.venv-lk/
+__pycache__/
+*.pyc
+
+# secrets — never commit any real .env (keep only the .example template)
+.env
+.env.*
+!.env.example
+*.local
+
+# theos
+PhonePhonePhoneSahur/.theos/
+PhonePhonePhoneSahur/packages/
+*.deb
+
+# xcode / xcodegen
+SahurKit/SahurKit.xcodeproj/
+SahurKit/build/
+DerivedData/
+.DS_Store
+.gstack/
+
+# built launcher
+Sahur.app/
+
+# runtime artifacts (telemetry / scratch records — not source)
+sahur-brain/sahur_metrics.jsonl
+sahur-brain/records/

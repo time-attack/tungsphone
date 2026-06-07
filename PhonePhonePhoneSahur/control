@@ -1,0 +1,9 @@
+Package: com.matianlaw.phonephonephonesahur
+Name: PhonePhonePhoneSahur
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Tung Tung Tung Sahur lives on your SpringBoard as your chaotic voice assistant.
+Maintainer: Sina
+Author: Sina
+Section: Tweaks
+Depends: mobilesubstrate

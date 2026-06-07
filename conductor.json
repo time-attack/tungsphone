@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "setup": "cd sahur-brain && python3 -m venv .venv && ./.venv/bin/pip install -q --upgrade pip && ./.venv/bin/pip install -q -r requirements.txt",
+    "run": "cd sahur-brain && ./.venv/bin/python sahur_voice.py",
+    "archive": "pkill -f ffplay; pkill -f afplay; true"
+  },
+  "runScriptMode": "nonconcurrent"
+}
